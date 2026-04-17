@@ -1,0 +1,10 @@
+version: "3.8"
+services:
+  redsocks:
+    build: .
+    container_name: redsocks
+    network_mode: host          # required so 127.0.0.1:12345 is on the host
+    restart: unless-stopped
+    volumes:
+      - ./redsocks.conf:/etc/redsocks.conf:ro
+

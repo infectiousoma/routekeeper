@@ -1,0 +1,9 @@
+version: "3.8"
+services:
+  dante:
+    image: vimagick/dante
+    container_name: dante-socks
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./sockd.conf:/etc/dante/sockd.conf:ro

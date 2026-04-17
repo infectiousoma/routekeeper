@@ -1,0 +1,13 @@
+version: "3.8"
+services:
+  dnsmasq:
+    image: jpillora/dnsmasq
+    container_name: proxy-dnsmasq
+    network_mode: host
+    cap_add: ["NET_ADMIN"]      # required to ipset-add on host
+    restart: unless-stopped
+    entrypoint: []
+    command: ["dnsmasq","-k","--conf-file=/etc/dnsmasq.conf"]
+    volumes:
+      - ./dnsmasq.conf:/etc/dnsmasq.conf:ro
+      - ./dnsmasq.d:/etc/dnsmasq.d:ro

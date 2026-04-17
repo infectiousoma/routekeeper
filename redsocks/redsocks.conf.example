@@ -1,0 +1,14 @@
+base {
+  log_debug = off;
+  log_info  = on;
+  daemon    = off;
+  redirector = iptables;
+}
+redsocks {
+  local_ip   = 127.0.0.1;
+  local_port = 12345;
+
+  ip   = YOUR_DANTE_IP;
+  port = 1080;
+  type = socks5;
+}

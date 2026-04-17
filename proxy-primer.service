@@ -1,0 +1,13 @@
+[Unit]
+Description=Enable US proxy (Netflix, OpenAI, Xfinity traffic steering)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=%h/proxy/scripts/proxy-on.sh
+ExecStop=%h/proxy/scripts/proxy-off.sh
+
+[Install]
+WantedBy=default.target

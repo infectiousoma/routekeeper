@@ -1,0 +1,11 @@
+# Real config — copy config.env.example → config.env and fill in your values
+config.env
+
+# Generated at startup by proxy-on.sh — do not commit
+dnsmasq/dnsmasq.d/*.conf
+redsocks/redsocks.conf
+
+# Editor / OS artifacts
+.DS_Store
+*.swp
+*~
