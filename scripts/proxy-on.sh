@@ -15,6 +15,16 @@ source "$REPO_DIR/config.env"
 mkdir -p "$BASELINE_DIR"
 
 say(){ printf '%s\n' "$*"; }
+
+# Returns the suffix of every DOMAINS_* variable that has matching IPSET_V4_* and IPSET_V6_* vars.
+# E.g. DOMAINS_NFX + IPSET_V4_NFX + IPSET_V6_NFX → "NFX"; DOMAINS_SORA + IPSET_V4_SORA + IPSET_V6_SORA → "SORA"
+all_suffixes(){
+  compgen -v | grep '^DOMAINS_' | sed 's/^DOMAINS_//' | sort | while read -r s; do
+    local v4="IPSET_V4_${s}" v6="IPSET_V6_${s}"
+    [[ -n "${!v4:-}" && -n "${!v6:-}" ]] && echo "$s"
+  done
+}
+
 wait_for(){ # wait_for "desc" cmd...
   local d="$1"; shift
   for i in {1..40}; do "$@" >/dev/null 2>&1 && return 0; sleep 0.25; done
@@ -43,9 +53,10 @@ generate_ipsets_conf(){
   local out="$dir/ipsets.conf"
   mkdir -p "$dir"
   : > "$out"
-  for d in $DOMAINS_NFX;  do printf 'ipset=/%s/%s,%s\n' "$d" "$IPSET_V4_NF" "$IPSET_V6_NF"; done >> "$out"
-  for d in $DOMAINS_SORA; do printf 'ipset=/%s/%s,%s\n' "$d" "$IPSET_V4_SO" "$IPSET_V6_SO"; done >> "$out"
-  for d in $DOMAINS_XF;   do printf 'ipset=/%s/%s,%s\n' "$d" "$IPSET_V4_XF" "$IPSET_V6_XF"; done >> "$out"
+  for suffix in $(all_suffixes); do
+    local doms="DOMAINS_${suffix}" v4="IPSET_V4_${suffix}" v6="IPSET_V6_${suffix}"
+    for d in ${!doms}; do printf 'ipset=/%s/%s,%s\n' "$d" "${!v4}" "${!v6}"; done >> "$out"
+  done
   say "[ok] generated $out ($(wc -l < "$out") ipset rules)"
 }
 
@@ -86,28 +97,37 @@ set_iface_dns(){
 }
 
 ensure_sets(){
-  sudo ipset create "$IPSET_V4_NF" hash:ip              -exist || { say "[err] failed to create ipset $IPSET_V4_NF — check: sudo modprobe ip_set"; exit 1; }
-  sudo ipset create "$IPSET_V4_SO" hash:ip              -exist || { say "[err] failed to create ipset $IPSET_V4_SO — check: sudo modprobe ip_set"; exit 1; }
-  sudo ipset create "$IPSET_V4_XF" hash:ip              -exist || { say "[err] failed to create ipset $IPSET_V4_XF — check: sudo modprobe ip_set"; exit 1; }
-  if [[ "$USE_IPV6" == "1" ]]; then
-    sudo ipset create "$IPSET_V6_NF" hash:ip family inet6 -exist || { say "[err] failed to create ipset $IPSET_V6_NF"; exit 1; }
-    sudo ipset create "$IPSET_V6_SO" hash:ip family inet6 -exist || { say "[err] failed to create ipset $IPSET_V6_SO"; exit 1; }
-    sudo ipset create "$IPSET_V6_XF" hash:ip family inet6 -exist || { say "[err] failed to create ipset $IPSET_V6_XF"; exit 1; }
-  fi
+  for suffix in $(all_suffixes); do
+    local v4="IPSET_V4_${suffix}" v6="IPSET_V6_${suffix}"
+    sudo ipset create "${!v4}" hash:ip -exist \
+      || { say "[err] failed to create ipset ${!v4} — check: sudo modprobe ip_set"; exit 1; }
+    if [[ "$USE_IPV6" == "1" ]]; then
+      sudo ipset create "${!v6}" hash:ip family inet6 -exist \
+        || { say "[err] failed to create ipset ${!v6}"; exit 1; }
+    fi
+  done
 }
 
 prime_sets(){
   # Actively "tickle" dnsmasq so it fills the ipsets before rules go in.
   local dns="$DNSIP_LOOP"
+  local all_domains=() first_v4=""
+  for suffix in $(all_suffixes); do
+    local doms="DOMAINS_${suffix}" v4="IPSET_V4_${suffix}"
+    [[ -z "$first_v4" ]] && first_v4="${!v4}"
+    for d in ${!doms}; do all_domains+=("$d"); done
+  done
 
   for _ in $(seq 1 $PRIME_TRIES); do
-    for d in $DOMAINS_NFX $DOMAINS_SORA $DOMAINS_XF; do
+    for d in "${all_domains[@]+"${all_domains[@]}"}"; do
       dig +short @"$dns" A "$d" >/dev/null 2>&1 || true
       [[ "$USE_IPV6" == "1" ]] && dig +short @"$dns" AAAA "$d" >/dev/null 2>&1 || true
     done
     sleep 0.2
-    NFX=$(sudo ipset list "$IPSET_V4_NF" 2>/dev/null | awk '/Number of entries/{print $4}')
-    [[ -n "${NFX:-}" && "$NFX" -gt 0 ]] && break
+    [[ -n "$first_v4" ]] || break
+    local cnt
+    cnt=$(sudo ipset list "$first_v4" 2>/dev/null | awk '/Number of entries/{print $4}')
+    [[ -n "${cnt:-}" && "$cnt" -gt 0 ]] && break
   done
 }
 
@@ -137,25 +157,21 @@ ensure_redsocks(){
 }
 
 install_rules(){
-  # v4 → redsocks (Netflix + Sora)
-  for SET in "$IPSET_V4_NF" "$IPSET_V4_SO" "$IPSET_V4_XF"; do
-    sudo iptables -t nat -C OUTPUT -p tcp -m set --match-set "$SET" dst -j REDIRECT --to-ports "$REDPORT" 2>/dev/null \
-      || sudo iptables -t nat -I OUTPUT 1 -p tcp -m set --match-set "$SET" dst -j REDIRECT --to-ports "$REDPORT"
+  for suffix in $(all_suffixes); do
+    local v4="IPSET_V4_${suffix}" v6="IPSET_V6_${suffix}"
+    sudo iptables -t nat -C OUTPUT -p tcp -m set --match-set "${!v4}" dst -j REDIRECT --to-ports "$REDPORT" 2>/dev/null \
+      || sudo iptables -t nat -I OUTPUT 1 -p tcp -m set --match-set "${!v4}" dst -j REDIRECT --to-ports "$REDPORT"
     if [[ "$BLOCK_QUIC" == "true" ]]; then
-      sudo iptables -C OUTPUT -p udp --dport 443 -m set --match-set "$SET" dst -j REJECT 2>/dev/null \
-        || sudo iptables -I OUTPUT 1 -p udp --dport 443 -m set --match-set "$SET" dst -j REJECT
+      sudo iptables -C OUTPUT -p udp --dport 443 -m set --match-set "${!v4}" dst -j REJECT 2>/dev/null \
+        || sudo iptables -I OUTPUT 1 -p udp --dport 443 -m set --match-set "${!v4}" dst -j REJECT
+    fi
+    if [[ "$USE_IPV6" == "1" ]]; then
+      sudo ip6tables -C OUTPUT -p tcp -m set --match-set "${!v6}" dst -j REJECT 2>/dev/null \
+        || sudo ip6tables -I OUTPUT 1 -p tcp -m set --match-set "${!v6}" dst -j REJECT
+      sudo ip6tables -C OUTPUT -p udp --dport 443 -m set --match-set "${!v6}" dst -j REJECT 2>/dev/null \
+        || sudo ip6tables -I OUTPUT 1 -p udp --dport 443 -m set --match-set "${!v6}" dst -j REJECT
     fi
   done
-
-  # v6: only block Netflix/Sora (forces v4 fallback just for them; YouTube untouched)
-  if [[ "$USE_IPV6" == "1" ]]; then
-    for SET6 in "$IPSET_V6_NF" "$IPSET_V6_SO" "$IPSET_V6_XF"; do
-      sudo ip6tables -C OUTPUT -p tcp -m set --match-set "$SET6" dst -j REJECT 2>/dev/null \
-        || sudo ip6tables -I OUTPUT 1 -p tcp -m set --match-set "$SET6" dst -j REJECT
-      sudo ip6tables -C OUTPUT -p udp --dport 443 -m set --match-set "$SET6" dst -j REJECT 2>/dev/null \
-        || sudo ip6tables -I OUTPUT 1 -p udp --dport 443 -m set --match-set "$SET6" dst -j REJECT
-    done
-  fi
 }
 
 save_baseline_once(){
@@ -169,8 +185,9 @@ save_baseline_once(){
 # ----------------- bring-up sequence -----------------
 save_baseline_once
 # clean stale nft rules that may reference old set names (safe no-op)
+_nft_pat=$(for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; echo "${!_v}"; done | paste -sd'|')
 sudo nft -a list ruleset 2>/dev/null \
-| awk -v pat="($IPSET_V4_NF|$IPSET_V4_SO|$IPSET_V4_XF)" '
+| awk -v pat="($_nft_pat)" '
   $1=="table"{fam=$2;tab=$3}
   $1=="chain"{chn=$2}
   $0 ~ pat { for(i=1;i<=NF;i++) if($i=="handle") h=$(i+1); if(h) print "nft delete rule",fam,tab,chn,"handle",h; h="" }
@@ -183,17 +200,21 @@ dnsmasq_up
 [[ "$SELF_DNS" == "true" ]] && set_iface_dns
 prime_sets
 
-# print ipset population counts for all 6 sets
+# print ipset population counts for all sets
 say "[ok] ipset population after priming:"
-for S in "$IPSET_V4_NF" "$IPSET_V6_NF" "$IPSET_V4_SO" "$IPSET_V6_SO" "$IPSET_V4_XF" "$IPSET_V6_XF"; do
-  cnt=$(sudo ipset list "$S" 2>/dev/null | awk '/Number of entries/{print $4}')
-  say "  $S: ${cnt:-0} entries"
+for _s in $(all_suffixes); do
+  for _setvar in "IPSET_V4_${_s}" "IPSET_V6_${_s}"; do
+    _cnt=$(sudo ipset list "${!_setvar}" 2>/dev/null | awk '/Number of entries/{print $4}')
+    say "  ${!_setvar}: ${_cnt:-0} entries"
+  done
 done
 
-# refuse to continue if Netflix set is still empty (misconfig)
-NFX=$(sudo ipset list "$IPSET_V4_NF" 2>/dev/null | awk '/Number of entries/{print $4}')
-if [[ -z "${NFX:-}" || "$NFX" -eq 0 ]]; then
-  say "[err] $IPSET_V4_NF is empty — check dnsmasq ipset= lines & host DNS ($DNSIP_LOOP)"
+# refuse to continue if the first ipset is still empty (misconfig)
+_first_v4_set=""
+for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; _first_v4_set="${!_v}"; break; done
+_first_cnt=$(sudo ipset list "$_first_v4_set" 2>/dev/null | awk '/Number of entries/{print $4}')
+if [[ -z "${_first_cnt:-}" || "$_first_cnt" -eq 0 ]]; then
+  say "[err] $_first_v4_set is empty — check dnsmasq ipset= lines & host DNS ($DNSIP_LOOP)"
   exit 1
 fi
 

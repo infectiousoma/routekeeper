@@ -23,7 +23,7 @@ docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | awk 'NR==1 || /
 echo
 
 echo "== ipset sizes =="
-for S in "$IPSET_V4_NF" "$IPSET_V6_NF" "$IPSET_V4_SO" "$IPSET_V6_SO"; do
+for S in "$IPSET_V4_NFX" "$IPSET_V6_NFX" "$IPSET_V4_SORA" "$IPSET_V6_SORA"; do
   sudo ipset list "$S" 2>/dev/null | awk 'NR==1 || /Number of entries/'
 done
 echo
@@ -37,7 +37,7 @@ sudo ip6tables -vnL OUTPUT 2>/dev/null | awk '/match-set .*_us6/ {print}'
 echo
 
 echo "== quick end-to-end test =="
-IP=$(sudo ipset list "$IPSET_V4_NF" 2>/dev/null | awk '/^[0-9]+\./{print $1; exit}')
+IP=$(sudo ipset list "$IPSET_V4_NFX" 2>/dev/null | awk '/^[0-9]+\./{print $1; exit}')
 if [[ -n "$IP" ]]; then
   echo "TCP 443 to $IP (should hit redsocks on lo:$REDPORT)"
   sudo tcpdump -ni lo "port $REDPORT" -c 2 >/dev/null 2>&1 &

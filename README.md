@@ -59,11 +59,23 @@ All runtime values are in **`~/proxy/config.env`** (copied from `config.env.exam
 | `REDPORT` | redsocks local listener port |
 | `DNSIP_LOOP` | dnsmasq loopback address |
 | `IFACE` | WiFi interface name |
-| `DOMAINS_NFX` / `DOMAINS_SORA` / `DOMAINS_XF` | Domain lists for the three service groups |
+| `DOMAINS_NFX` / `DOMAINS_SORA` / `DOMAINS_XF` | Domain lists for the built-in service groups |
 
 Only one config file requires manual editing — `dante/sockd.conf` on your remote server (it needs your WireGuard IP, WAN interface, and subnet, which vary per machine).
 
 `redsocks/redsocks.conf` and `dnsmasq/dnsmasq.d/ipsets.conf` are both generated automatically from `config.env` each time `proxy-on.sh` runs. You never edit them directly.
+
+### Adding a new service group
+
+Add three lines to `config.env` — the suffix must match across all three:
+
+```env
+DOMAINS_FOO="${DOMAINS_FOO:-example.com api.example.com}"
+IPSET_V4_FOO="${IPSET_V4_FOO:-foo_us}"
+IPSET_V6_FOO="${IPSET_V6_FOO:-foo_us6}"
+```
+
+That's it. `proxy-on.sh` auto-discovers any `DOMAINS_*` variable that has matching `IPSET_V4_*` and `IPSET_V6_*` variables (same suffix). No script changes needed.
 
 ---
 
@@ -75,7 +87,7 @@ Only one config file requires manual editing — `dante/sockd.conf` on your remo
 | `openai_us` / `openai_us6` | inet / inet6 | Service group 2 (DOMAINS_SORA) |
 | `xfinity_us` / `xfinity_us6` | inet / inet6 | Service group 3 (DOMAINS_XF) |
 
-Names are configurable via `IPSET_V4_NF`, `IPSET_V4_SO`, `IPSET_V4_XF` (and their `_V6_` counterparts) in `config.env`.
+Names are configurable via `IPSET_V4_NFX`, `IPSET_V4_SORA`, `IPSET_V4_XF` (and their `_V6_` counterparts) in `config.env`. Additional groups can be added — see [Adding a new service group](#adding-a-new-service-group) above.
 
 ---
 
@@ -89,8 +101,8 @@ Names are configurable via `IPSET_V4_NF`, `IPSET_V4_SO`, `IPSET_V4_XF` (and thei
 4. **Generates `dnsmasq/dnsmasq.d/ipsets.conf`** from `DOMAINS_*` and `IPSET_*` in `config.env`
 5. Starts dnsmasq container (picks up the generated ipsets.conf)
 6. **Points `$IFACE` DNS to local dnsmasq** — auto-detects resolver: `resolvectl` (systemd-resolved) → `nmcli` (NetworkManager) → `/etc/resolv.conf`
-7. **Primes ipsets** — runs `dig` against dnsmasq for every domain in `DOMAINS_NFX`, `DOMAINS_SORA`, `DOMAINS_XF` to pre-populate the sets
-8. Prints entry counts for all 6 sets; aborts if the first ipset is still empty
+7. **Primes ipsets** — runs `dig` against dnsmasq for every domain in all `DOMAINS_*` groups to pre-populate the sets
+8. Prints entry counts for all sets; aborts if the first ipset is still empty
 9. Starts redsocks container
 10. Installs iptables rules (NAT REDIRECT + QUIC block + IPv6 REJECT)
 11. Runs a Dante connectivity test

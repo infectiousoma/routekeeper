@@ -49,8 +49,8 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `DNSIP_LOOP` | `127.100.53.53` | dnsmasq loopback address; also in dnsmasq/dnsmasq.conf |
 | `DNSIP_BRIDGE` | `172.17.0.1` | Docker bridge IP dnsmasq also listens on; also in dnsmasq/dnsmasq.conf |
 | `IFACE` | _(your value)_ | WiFi interface name |
-| `IPSET_V4_NF` / `IPSET_V6_NF` | `netflix_us` / `netflix_us6` | Service group 1 ipset names |
-| `IPSET_V4_SO` / `IPSET_V6_SO` | `openai_us` / `openai_us6` | Service group 2 ipset names |
+| `IPSET_V4_NFX` / `IPSET_V6_NFX` | `netflix_us` / `netflix_us6` | Service group 1 ipset names |
+| `IPSET_V4_SORA` / `IPSET_V6_SORA` | `openai_us` / `openai_us6` | Service group 2 ipset names |
 | `IPSET_V4_XF` / `IPSET_V6_XF` | `xfinity_us` / `xfinity_us6` | Service group 3 ipset names |
 | `USE_IPV6` | `1` | Add targeted IPv6 REJECT rules to force v4 fallback |
 | `BLOCK_QUIC` | `true` | Block UDP/443 to force TCP fallback through redsocks |
@@ -63,17 +63,20 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `DOMAINS_NFX` | _(your domains)_ | Domains for service group 1 (primed + ipset-tagged) |
 | `DOMAINS_SORA` | _(your domains)_ | Domains for service group 2 |
 | `DOMAINS_XF` | _(your domains)_ | Domains for service group 3 |
+| `DOMAINS_FOO` + `IPSET_V4_FOO` + `IPSET_V6_FOO` | _(any suffix)_ | Pattern for adding new groups — suffix must match across all three |
 
 ## Kernel ipsets
 
 | ipset | Family | Populated by | Purpose |
 |---|---|---|---|
-| `$IPSET_V4_NF` | inet | dnsmasq ipset= lines | Service group 1 (IPv4, for REDIRECT) |
-| `$IPSET_V6_NF` | inet6 | dnsmasq ipset= lines | Service group 1 (IPv6, for REJECT) |
-| `$IPSET_V4_SO` | inet | dnsmasq ipset= lines | Service group 2 (IPv4, for REDIRECT) |
-| `$IPSET_V6_SO` | inet6 | dnsmasq ipset= lines | Service group 2 (IPv6, for REJECT) |
+| `$IPSET_V4_NFX` | inet | dnsmasq ipset= lines | Service group 1 (IPv4, for REDIRECT) |
+| `$IPSET_V6_NFX` | inet6 | dnsmasq ipset= lines | Service group 1 (IPv6, for REJECT) |
+| `$IPSET_V4_SORA` | inet | dnsmasq ipset= lines | Service group 2 (IPv4, for REDIRECT) |
+| `$IPSET_V6_SORA` | inet6 | dnsmasq ipset= lines | Service group 2 (IPv6, for REJECT) |
 | `$IPSET_V4_XF` | inet | dnsmasq ipset= lines | Service group 3 (IPv4, for REDIRECT) |
 | `$IPSET_V6_XF` | inet6 | dnsmasq ipset= lines | Service group 3 (IPv6, for REJECT) |
+
+Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4_FOO` and `IPSET_V6_FOO` in `config.env` is automatically included. No script changes needed to add a new group.
 
 ## File Map
 
@@ -162,7 +165,7 @@ Priming is the startup phase between dnsmasq coming up and iptables rules going 
 
 **1. Ipset creation (`ensure_sets`)** — runs *before* dnsmasq starts. Critical: if dnsmasq starts and tries to write to a set that doesn't exist, it silently disables writes to that set for the lifetime of the process. The sets must exist first.
 
-**2. DNS lookups (`prime_sets`)** — runs *after* dnsmasq is up. `dig` queries are sent directly to `$DNSIP_LOOP` (bypassing the system resolver) for every domain in `DOMAINS_NFX`, `DOMAINS_SORA`, and `DOMAINS_XF`. Each query causes dnsmasq to resolve the domain and add the returned IPs to the matching kernel ipset. This pre-populates the sets so iptables rules have entries to match against immediately on startup.
+**2. DNS lookups (`prime_sets`)** — runs *after* dnsmasq is up. `dig` queries are sent directly to `$DNSIP_LOOP` (bypassing the system resolver) for every domain in all `DOMAINS_*` groups. Each query causes dnsmasq to resolve the domain and add the returned IPs to the matching kernel ipset. This pre-populates the sets so iptables rules have entries to match against immediately on startup.
 
 After priming, entry counts for all 6 sets are printed. If `$IPSET_V4_NF` is still empty, the script aborts — this catches misconfigurations.
 

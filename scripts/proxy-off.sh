@@ -9,6 +9,13 @@ source "$REPO_DIR/config.env"
 
 say(){ printf '%s\n' "$*"; }
 
+all_suffixes(){
+  compgen -v | grep '^DOMAINS_' | sed 's/^DOMAINS_//' | sort | while read -r s; do
+    local v4="IPSET_V4_${s}" v6="IPSET_V6_${s}"
+    [[ -n "${!v4:-}" && -n "${!v6:-}" ]] && echo "$s"
+  done
+}
+
 restore_iface_dns(){
   [[ "$SELF_DNS" == "true" ]] || return 0
   local backend_file="$BASELINE_DIR/dns.backend"
@@ -37,19 +44,16 @@ restore_iface_dns(){
   say "[ok] DNS on $IFACE restored (via $backend)"
 }
 
-# Remove v4 rules (quiet if missing)
-for SET in "$IPSET_V4_NF" "$IPSET_V4_SO" "$IPSET_V4_XF"; do
-  sudo iptables -t nat -D OUTPUT -p tcp -m set --match-set "$SET" dst -j REDIRECT --to-ports "$REDPORT" 2>/dev/null || true
-  sudo iptables -D OUTPUT -p udp --dport 443 -m set --match-set "$SET" dst -j REJECT 2>/dev/null || true
+# Remove rules (quiet if missing)
+for _s in $(all_suffixes); do
+  _v4="IPSET_V4_${_s}"; _v6="IPSET_V6_${_s}"
+  sudo iptables -t nat -D OUTPUT -p tcp -m set --match-set "${!_v4}" dst -j REDIRECT --to-ports "$REDPORT" 2>/dev/null || true
+  sudo iptables -D OUTPUT -p udp --dport 443 -m set --match-set "${!_v4}" dst -j REJECT 2>/dev/null || true
+  sudo ip6tables -D OUTPUT -p tcp -m set --match-set "${!_v6}" dst -j REJECT 2>/dev/null || true
+  sudo ip6tables -D OUTPUT -p udp --dport 443 -m set --match-set "${!_v6}" dst -j REJECT 2>/dev/null || true
 done
 
-# Remove v6 rules (quiet if missing)
-for SET6 in "$IPSET_V6_NF" "$IPSET_V6_SO" "$IPSET_V6_XF"; do
-  sudo ip6tables -D OUTPUT -p tcp -m set --match-set "$SET6" dst -j REJECT 2>/dev/null || true
-  sudo ip6tables -D OUTPUT -p udp --dport 443 -m set --match-set "$SET6" dst -j REJECT 2>/dev/null || true
-done
-
-echo "[ok] Netflix/Sora/Xfinity redirect + QUIC/v6 rules removed"
+echo "[ok] proxy redirect + QUIC/v6 rules removed"
 
 # Restore saved firewall state if present (ignore errors if sets were removed)
 if [[ -f "$BASELINE_DIR/ipset.save" ]]; then sudo ipset restore -exist < "$BASELINE_DIR/ipset.save" 2>/dev/null || true; fi
@@ -59,8 +63,10 @@ echo "[ok] firewall baseline restored (ipset/iptables/ip6tables)"
 restore_iface_dns
 
 # Destroy proxy ipsets — they were created by proxy-on.sh and are not in the baseline
-for SET in "$IPSET_V4_NF" "$IPSET_V6_NF" "$IPSET_V4_SO" "$IPSET_V6_SO" "$IPSET_V4_XF" "$IPSET_V6_XF"; do
-  sudo ipset destroy "$SET" 2>/dev/null || true
+for _s in $(all_suffixes); do
+  _v4="IPSET_V4_${_s}"; _v6="IPSET_V6_${_s}"
+  sudo ipset destroy "${!_v4}" 2>/dev/null || true
+  sudo ipset destroy "${!_v6}" 2>/dev/null || true
 done
 echo "[ok] ipsets destroyed"
 
