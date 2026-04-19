@@ -88,7 +88,7 @@ Names are configurable via `IPSET_V4_NF`, `IPSET_V4_SO`, `IPSET_V4_XF` (and thei
 3. **Creates ipsets** (before dnsmasq starts — critical ordering)
 4. **Generates `dnsmasq/dnsmasq.d/ipsets.conf`** from `DOMAINS_*` and `IPSET_*` in `config.env`
 5. Starts dnsmasq container (picks up the generated ipsets.conf)
-6. Points `$IFACE` DNS to local dnsmasq
+6. **Points `$IFACE` DNS to local dnsmasq** — auto-detects resolver: `resolvectl` (systemd-resolved) → `nmcli` (NetworkManager) → `/etc/resolv.conf`
 7. **Primes ipsets** — runs `dig` against dnsmasq for every domain in `DOMAINS_NFX`, `DOMAINS_SORA`, `DOMAINS_XF` to pre-populate the sets
 8. Prints entry counts for all 6 sets; aborts if the first ipset is still empty
 9. Starts redsocks container
@@ -165,7 +165,13 @@ docker logs --tail=50 redsocks
 ```
 Most common cause: syntax error in `redsocks/redsocks.conf` (no inline `#` comments allowed in redsocks config format).
 
-**5. Jellyfin or YouTube broke**
+**5. `resolvectl: command not found`**
+
+`resolvectl` requires `systemd-resolved`, which isn't installed by default on all distros (e.g. Debian). The scripts auto-detect the resolver — if `systemd-resolved` isn't running it falls back to `nmcli` (NetworkManager), then to editing `/etc/resolv.conf` directly. No action needed; set `SELF_DNS=true` in `config.env` and the right backend will be used automatically.
+
+---
+
+**6. Jellyfin or YouTube broke**
 
 Do **not** add `filter-aaaa` to dnsmasq.conf — it strips AAAA records globally and breaks IPv6-dependent services. The targeted ip6tables REJECT approach (used here) blocks only steered service IPs and leaves everything else on normal IPv6.
 
