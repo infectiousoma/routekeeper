@@ -130,13 +130,14 @@ proxy-on.sh
   |       |-- uses: redsocks/redsocks.conf -> forwards to YOUR_DANTE_IP:DANTE_PORT
   |-- creates: kernel ipsets (6 sets — 2 per service group)
   |-- modifies: iptables (nat OUTPUT REDIRECT + filter OUTPUT REJECT for QUIC/IPv6)
-  |-- modifies: resolvectl (points $IFACE DNS to $DNSIP_LOOP)
+  |-- modifies: host DNS via detect_dns_backend() → resolvectl | nmcli | /etc/resolv.conf
   |-- saves: ~/.proxy-firewall-baseline/ (first run only)
 
 proxy-off.sh
   |-- sources: config.env
   |-- removes: iptables rules (all 3 service groups, v4 + v6)
   |-- restores: ~/.proxy-firewall-baseline/ (iptables + ipset)
+  |-- restores: host DNS via backend saved in ~/.proxy-firewall-baseline/dns.backend
   |-- destroys: kernel ipsets (all 6)
   |-- stops: redsocks container (dnsmasq stays up — DNS continues to work)
 
@@ -153,7 +154,7 @@ Dante (remote server)
 ~/proxy/scripts/proxy-on.sh
 ```
 
-**Sequence**: save firewall baseline → clean stale nft rules → **create ipsets** → **generate dnsmasq/dnsmasq.d/ipsets.conf** → start dnsmasq container → set host DNS to `$DNSIP_LOOP` → **prime DNS lookups** → print ipset counts → verify first ipset non-empty → start redsocks container → install iptables rules → Dante connectivity test
+**Sequence**: save firewall baseline → clean stale nft rules → **create ipsets** → **generate dnsmasq/dnsmasq.d/ipsets.conf** → start dnsmasq container → detect DNS backend + set host DNS to `$DNSIP_LOOP` → **prime DNS lookups** → print ipset counts → verify first ipset non-empty → start redsocks container → install iptables rules → Dante connectivity test
 
 ### Priming explained
 
@@ -170,7 +171,7 @@ After priming, entry counts for all 6 sets are printed. If `$IPSET_V4_NF` is sti
 ~/proxy/scripts/proxy-off.sh
 ```
 
-**Sequence**: remove iptables rules (all 3 groups) → restore baseline firewall → **destroy all 6 proxy ipsets** → stop redsocks (dnsmasq left running)
+**Sequence**: remove iptables rules (all 3 groups) → restore baseline firewall → **restore host DNS** (via saved backend) → **destroy all 6 proxy ipsets** → stop redsocks (dnsmasq left running)
 
 ### Auto-start on boot
 ```bash
@@ -182,26 +183,28 @@ systemctl --user enable proxy-primer.service
 
 ## Quirks and Assumptions
 
-1. **Dynamic ipsets.conf**: `dnsmasq/dnsmasq.d/ipsets.conf` is generated fresh on every `proxy-on.sh` run from `DOMAINS_*` and `IPSET_*` in `config.env`. It is gitignored. Do not add `ipset=` lines to `dnsmasq/dnsmasq.conf` — they will be ignored (the file uses `conf-dir` to load `dnsmasq.d/`).
+1. **DNS backend detection**: `set_iface_dns` auto-detects the resolver in use via `detect_dns_backend()`: tries `resolvectl` (systemd-resolved) first, falls back to `nmcli` (NetworkManager), then falls back to direct `/etc/resolv.conf` edit. The chosen backend is saved to `$BASELINE_DIR/dns.backend` so `proxy-off.sh` can restore using the same method. This makes the scripts portable across Debian/Ubuntu/Arch systems where systemd-resolved may not be installed or active.
 
-2. **IPv6 strategy**: Rather than proxying IPv6, the system **blocks** IPv6 for steered services (REJECT in ip6tables OUTPUT) to force applications to fall back to IPv4, which then gets caught by the NAT REDIRECT. Global `filter-aaaa` in dnsmasq breaks other services (Jellyfin, YouTube, etc.) — do not use it.
+2. **Dynamic ipsets.conf**: `dnsmasq/dnsmasq.d/ipsets.conf` is generated fresh on every `proxy-on.sh` run from `DOMAINS_*` and `IPSET_*` in `config.env`. It is gitignored. Do not add `ipset=` lines to `dnsmasq/dnsmasq.conf` — they will be ignored (the file uses `conf-dir` to load `dnsmasq.d/`).
 
-3. **QUIC must be blocked**: Streaming and other services will use QUIC (UDP/443) if available, which bypasses the TCP-only redsocks redirect. The REJECT rule forces TCP fallback.
+3. **IPv6 strategy**: Rather than proxying IPv6, the system **blocks** IPv6 for steered services (REJECT in ip6tables OUTPUT) to force applications to fall back to IPv4, which then gets caught by the NAT REDIRECT. Global `filter-aaaa` in dnsmasq breaks other services (Jellyfin, YouTube, etc.) — do not use it.
 
-4. **DoH/DoT bypasses everything**: If a browser uses DNS-over-HTTPS, queries never hit dnsmasq, ipsets stay empty, and nothing gets redirected. Users must disable Secure DNS in their browser.
+4. **QUIC must be blocked**: Streaming and other services will use QUIC (UDP/443) if available, which bypasses the TCP-only redsocks redirect. The REJECT rule forces TCP fallback.
 
-5. **dnsmasq stays running on proxy-off**: By design, so the host still has local DNS caching after the proxy is disabled. Only redsocks is stopped.
+5. **DoH/DoT bypasses everything**: If a browser uses DNS-over-HTTPS, queries never hit dnsmasq, ipsets stay empty, and nothing gets redirected. Users must disable Secure DNS in their browser.
 
-6. **Baseline firewall snapshots are write-once**: Saved on first `proxy-on.sh` run. To update after changing your normal firewall, manually re-save:
+6. **dnsmasq stays running on proxy-off**: By design, so the host still has local DNS caching after the proxy is disabled. Only redsocks is stopped.
+
+7. **Baseline firewall snapshots are write-once**: Saved on first `proxy-on.sh` run. To update after changing your normal firewall, manually re-save:
    ```bash
    sudo iptables-save  > ~/.proxy-firewall-baseline/iptables.v4
    sudo ip6tables-save > ~/.proxy-firewall-baseline/ip6tables.v6
    sudo ipset save     > ~/.proxy-firewall-baseline/ipset.save
    ```
 
-7. **dnsmasq force-recreates on every proxy-on**: The container is always recreated (`--force-recreate`) to ensure it loads the freshly generated `ipsets.conf`. This adds ~2 seconds to startup.
+8. **dnsmasq force-recreates on every proxy-on**: The container is always recreated (`--force-recreate`) to ensure it loads the freshly generated `ipsets.conf`. This adds ~2 seconds to startup.
 
-8. **config.env is shell-only**: `redsocks/redsocks.conf` and `dante/sockd.conf` use app-specific formats and cannot source shell variables. If you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update those two files manually to match. `dnsmasq/dnsmasq.conf` also requires manual updates if you change `DNSIP_LOOP` or `DNSIP_BRIDGE`.
+9. **config.env is shell-only**: `redsocks/redsocks.conf` and `dante/sockd.conf` use app-specific formats and cannot source shell variables. If you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update those two files manually to match. `dnsmasq/dnsmasq.conf` also requires manual updates if you change `DNSIP_LOOP` or `DNSIP_BRIDGE`.
 
 ## Common Operations
 

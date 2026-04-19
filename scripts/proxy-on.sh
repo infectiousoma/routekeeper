@@ -12,7 +12,6 @@ echo "[info] repo root: $REPO_DIR"
 # shellcheck source=../config.env
 source "$REPO_DIR/config.env"
 
-DNS_SNAPSHOT="${BASELINE_DIR}/dns.${IFACE}.before"
 mkdir -p "$BASELINE_DIR"
 
 say(){ printf '%s\n' "$*"; }
@@ -20,6 +19,16 @@ wait_for(){ # wait_for "desc" cmd...
   local d="$1"; shift
   for i in {1..40}; do "$@" >/dev/null 2>&1 && return 0; sleep 0.25; done
   say "[warn] timeout: $d"; return 1
+}
+
+detect_dns_backend(){
+  if command -v resolvectl &>/dev/null && systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    echo "resolvectl"
+  elif command -v nmcli &>/dev/null && nmcli -g GENERAL.CONNECTION device show "$IFACE" &>/dev/null 2>&1; then
+    echo "nmcli"
+  else
+    echo "resolv.conf"
+  fi
 }
 
 ensure_alias(){
@@ -48,11 +57,32 @@ dnsmasq_up(){
 }
 
 set_iface_dns(){
-  [[ -f "$DNS_SNAPSHOT" ]] || touch "$DNS_SNAPSHOT"
-  sudo resolvectl dns "$IFACE" "$DNSIP_LOOP" || true
-  sudo resolvectl flush-caches || true
-  wait_for "resolvectl shows $DNSIP_LOOP" bash -lc "resolvectl status $IFACE | grep -q 'DNS Servers:.*$DNSIP_LOOP'"
-  say "[ok] DNS on $IFACE → $DNSIP_LOOP"
+  local backend
+  backend=$(detect_dns_backend)
+  echo "$backend" > "$BASELINE_DIR/dns.backend"
+
+  case "$backend" in
+    resolvectl)
+      sudo resolvectl dns "$IFACE" "$DNSIP_LOOP" || true
+      sudo resolvectl flush-caches || true
+      wait_for "resolvectl shows $DNSIP_LOOP" bash -lc "resolvectl status $IFACE | grep -q 'DNS Servers:.*$DNSIP_LOOP'"
+      ;;
+    nmcli)
+      local conn
+      conn=$(nmcli -g GENERAL.CONNECTION device show "$IFACE" 2>/dev/null)
+      echo "$conn" > "$BASELINE_DIR/dns.nmcli.conn"
+      nmcli -g ipv4.dns con show "$conn" 2>/dev/null > "$BASELINE_DIR/dns.nmcli.old-dns" || true
+      nmcli -g ipv4.ignore-auto-dns con show "$conn" 2>/dev/null > "$BASELINE_DIR/dns.nmcli.old-ignore" || true
+      sudo nmcli con mod "$conn" ipv4.dns "$DNSIP_LOOP" ipv4.ignore-auto-dns yes
+      sudo nmcli con up "$conn"
+      wait_for "nmcli shows $DNSIP_LOOP" bash -lc "nmcli -g ipv4.dns con show '$conn' | grep -qF '$DNSIP_LOOP'"
+      ;;
+    resolv.conf)
+      cp /etc/resolv.conf "$BASELINE_DIR/resolv.conf.bak" 2>/dev/null || true
+      { printf 'nameserver %s\n' "$DNSIP_LOOP"; cat /etc/resolv.conf; } | sudo tee /etc/resolv.conf > /dev/null
+      ;;
+  esac
+  say "[ok] DNS on $IFACE → $DNSIP_LOOP (via $backend)"
 }
 
 ensure_sets(){
