@@ -63,7 +63,12 @@ All runtime values are in **`~/proxy/config.env`** (copied from `config.env.exam
 
 Only one config file requires manual editing — `dante/sockd.conf` on your remote server (it needs your WireGuard IP, WAN interface, and subnet, which vary per machine).
 
-`redsocks/redsocks.conf` and `dnsmasq/dnsmasq.d/ipsets.conf` are both generated automatically from `config.env` each time `proxy-on.sh` runs. You never edit them directly.
+`redsocks/redsocks.conf`, `dnsmasq/dnsmasq.conf`, and `dnsmasq/dnsmasq.d/ipsets.conf` are all generated automatically from `config.env` each time `proxy-on.sh` runs. You never edit them directly.
+
+To route a local domain through your LAN DNS server (e.g. for `.home.arpa` hostnames), set `LAN_DNS` in `config.env`:
+```
+LAN_DNS="home.arpa/192.168.0.99"
+```
 
 ---
 
@@ -86,14 +91,15 @@ Names are configurable via `IPSET_V4_NF`, `IPSET_V4_SO`, `IPSET_V4_XF` (and thei
 1. Saves firewall baseline (write-once: `~/.proxy-firewall-baseline/`)
 2. Cleans stale nft rules referencing old ipset names
 3. **Creates ipsets** (before dnsmasq starts — critical ordering)
-4. **Generates `dnsmasq/dnsmasq.d/ipsets.conf`** from `DOMAINS_*` and `IPSET_*` in `config.env`
-5. Starts dnsmasq container (picks up the generated ipsets.conf)
-6. **Points `$IFACE` DNS to local dnsmasq** — auto-detects resolver: `resolvectl` (systemd-resolved) → `nmcli` (NetworkManager) → `/etc/resolv.conf`
-7. **Primes ipsets** — runs `dig` against dnsmasq for every domain in `DOMAINS_NFX`, `DOMAINS_SORA`, `DOMAINS_XF` to pre-populate the sets
-8. Prints entry counts for all 6 sets; aborts if the first ipset is still empty
-9. Starts redsocks container
-10. Installs iptables rules (NAT REDIRECT + QUIC block + IPv6 REJECT)
-11. Runs a Dante connectivity test
+4. **Generates `dnsmasq/dnsmasq.conf`** from `config.env` (`DNSIP_LOOP`, `DNSIP_BRIDGE`, `LAN_DNS`)
+5. **Generates `dnsmasq/dnsmasq.d/ipsets.conf`** from `DOMAINS_*` and `IPSET_*` in `config.env`
+6. Starts dnsmasq container (picks up both generated files)
+7. **Points `$IFACE` DNS to local dnsmasq** — auto-detects resolver: `resolvectl` (systemd-resolved) → `nmcli` (NetworkManager) → `/etc/resolv.conf`
+8. **Primes ipsets** — runs `dig` against dnsmasq for every domain in `DOMAINS_NFX`, `DOMAINS_SORA`, `DOMAINS_XF` to pre-populate the sets
+9. Prints entry counts for all 6 sets; aborts if the first ipset is still empty
+10. Starts redsocks container
+11. Installs iptables rules (NAT REDIRECT + QUIC block + IPv6 REJECT)
+12. Runs a Dante connectivity test
 
 ---
 
@@ -218,7 +224,7 @@ scripts/
   proxy-status.sh           # diagnostics
 dnsmasq/
   docker-compose.yml        # runs proxy-dnsmasq container
-  dnsmasq.conf              # static dnsmasq config (upstreams, listen address)
+  dnsmasq.conf              # generated at startup by proxy-on.sh (gitignored)
   dnsmasq.d/
     ipsets.conf             # generated at startup by proxy-on.sh (gitignored)
 redsocks/

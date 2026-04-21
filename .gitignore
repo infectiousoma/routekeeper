@@ -2,6 +2,7 @@
 config.env
 
 # Generated at startup by proxy-on.sh — do not commit
+dnsmasq/dnsmasq.conf
 dnsmasq/dnsmasq.d/*.conf
 redsocks/redsocks.conf
 
