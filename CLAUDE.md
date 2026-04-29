@@ -34,11 +34,11 @@ The primary mode is **laptop mode**: steering for the local machine via `OUTPUT`
 
 ## Key Configuration Values
 
-All runtime-configurable values are in **`config.env`** (copied from `config.env.example`). Three app-specific config files cannot source shell variables — if you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update these files manually to match:
+All runtime-configurable values are in **`config.env`** (copied from `config.env.example`). Two app-specific config files cannot source shell variables — if you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update these files manually to match:
 - `redsocks/redsocks.conf`
 - `dante/sockd.conf`
 
-`dnsmasq/dnsmasq.conf` does **not** need manual changes for domains — `proxy-on.sh` generates `dnsmasq/dnsmasq.d/ipsets.conf` automatically from `DOMAINS_*` and `IPSET_*` variables at startup.
+`dnsmasq/dnsmasq.conf` is **fully generated** by `proxy-on.sh` from `config.env` on every startup — do not edit it manually. Domain-to-ipset rules go in `dnsmasq/dnsmasq.d/ipsets.conf`, which is also generated from `DOMAINS_*` and `IPSET_*` variables.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -46,8 +46,9 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `DANTE_PORT` | `1080` | Dante SOCKS5 port; also in redsocks.conf, sockd.conf |
 | `REDHOST` | `127.0.0.1` | redsocks local bind address; also in redsocks.conf |
 | `REDPORT` | `12345` | redsocks local listen port; also in redsocks.conf |
-| `DNSIP_LOOP` | `127.100.53.53` | dnsmasq loopback address; also in dnsmasq/dnsmasq.conf |
-| `DNSIP_BRIDGE` | `172.17.0.1` | Docker bridge IP dnsmasq also listens on; also in dnsmasq/dnsmasq.conf |
+| `DNSIP_LOOP` | `127.100.53.53` | dnsmasq loopback address (written into generated dnsmasq.conf) |
+| `DNSIP_BRIDGE` | `172.17.0.1` | Docker bridge IP dnsmasq also listens on (written into generated dnsmasq.conf) |
+| `LAN_DNS` | _(empty)_ | Optional: route a local domain to a LAN DNS server (format: `domain/ip`) |
 | `IFACE` | _(your value)_ | WiFi interface name |
 | `IPSET_V4_NFX` / `IPSET_V6_NFX` | `netflix_us` / `netflix_us6` | Service group 1 ipset names |
 | `IPSET_V4_SORA` / `IPSET_V6_SORA` | `openai_us` / `openai_us6` | Service group 2 ipset names |
@@ -118,7 +119,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | File | Role |
 |---|---|
 | `docker-compose.yml` | Runs dnsmasq (`jpillora/dnsmasq`) in host network mode with `NET_ADMIN` cap |
-| `dnsmasq.conf` | Static config: upstream resolvers, listen addresses, `conf-dir` pointer to `dnsmasq.d/` |
+| `dnsmasq.conf` | **Generated on every run** by `proxy-on.sh` from `config.env` (`DNSIP_LOOP`, `DNSIP_BRIDGE`, `LAN_DNS`). Gitignored. Do not edit manually. |
 | `dnsmasq.d/ipsets.conf` | **Generated at startup** by `proxy-on.sh` from `DOMAINS_*` + `IPSET_*` in `config.env`. Gitignored. |
 
 ## Dependency Graph
@@ -126,6 +127,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 ```
 proxy-on.sh
   |-- sources: config.env
+  |-- generates: dnsmasq/dnsmasq.conf  (from DNSIP_LOOP, DNSIP_BRIDGE, LAN_DNS)
   |-- generates: dnsmasq/dnsmasq.d/ipsets.conf  (from DOMAINS_* + IPSET_* vars)
   |-- starts: dnsmasq/docker-compose.yml  (container: proxy-dnsmasq)
   |       |-- uses: dnsmasq/dnsmasq.conf + dnsmasq.d/ipsets.conf
@@ -157,7 +159,7 @@ Dante (remote server)
 ~/proxy/scripts/proxy-on.sh
 ```
 
-**Sequence**: save firewall baseline → clean stale nft rules → **create ipsets** → **generate dnsmasq/dnsmasq.d/ipsets.conf** → start dnsmasq container → detect DNS backend + set host DNS to `$DNSIP_LOOP` → **prime DNS lookups** → print ipset counts → verify first ipset non-empty → start redsocks container → install iptables rules → Dante connectivity test
+**Sequence**: save firewall baseline → clean stale nft rules → **create ipsets** → **generate dnsmasq/dnsmasq.conf** → **generate dnsmasq/dnsmasq.d/ipsets.conf** → start dnsmasq container → detect DNS backend + set host DNS to `$DNSIP_LOOP` → **prime DNS lookups** → print ipset counts → verify first ipset non-empty → start redsocks container → install iptables rules → Dante connectivity test
 
 ### Priming explained
 
@@ -167,7 +169,7 @@ Priming is the startup phase between dnsmasq coming up and iptables rules going 
 
 **2. DNS lookups (`prime_sets`)** — runs *after* dnsmasq is up. `dig` queries are sent directly to `$DNSIP_LOOP` (bypassing the system resolver) for every domain in all `DOMAINS_*` groups. Each query causes dnsmasq to resolve the domain and add the returned IPs to the matching kernel ipset. This pre-populates the sets so iptables rules have entries to match against immediately on startup.
 
-After priming, entry counts for all 6 sets are printed. If `$IPSET_V4_NF` is still empty, the script aborts — this catches misconfigurations.
+After priming, entry counts for all sets are printed. If the first ipset is still empty, the script aborts — this catches misconfigurations.
 
 ### Disable
 ```bash
@@ -188,7 +190,7 @@ systemctl --user enable proxy-primer.service
 
 1. **DNS backend detection**: `set_iface_dns` auto-detects the resolver in use via `detect_dns_backend()`: tries `resolvectl` (systemd-resolved) first, falls back to `nmcli` (NetworkManager), then falls back to direct `/etc/resolv.conf` edit. The chosen backend is saved to `$BASELINE_DIR/dns.backend` so `proxy-off.sh` can restore using the same method. This makes the scripts portable across Debian/Ubuntu/Arch systems where systemd-resolved may not be installed or active.
 
-2. **Dynamic ipsets.conf**: `dnsmasq/dnsmasq.d/ipsets.conf` is generated fresh on every `proxy-on.sh` run from `DOMAINS_*` and `IPSET_*` in `config.env`. It is gitignored. Do not add `ipset=` lines to `dnsmasq/dnsmasq.conf` — they will be ignored (the file uses `conf-dir` to load `dnsmasq.d/`).
+2. **Generated dnsmasq config**: Both `dnsmasq/dnsmasq.conf` and `dnsmasq/dnsmasq.d/ipsets.conf` are generated fresh on every `proxy-on.sh` run from `config.env`. Both are gitignored. Do not edit `dnsmasq.conf` manually — changes will be overwritten at next startup.
 
 3. **IPv6 strategy**: Rather than proxying IPv6, the system **blocks** IPv6 for steered services (REJECT in ip6tables OUTPUT) to force applications to fall back to IPv4, which then gets caught by the NAT REDIRECT. Global `filter-aaaa` in dnsmasq breaks other services (Jellyfin, YouTube, etc.) — do not use it.
 
@@ -207,7 +209,7 @@ systemctl --user enable proxy-primer.service
 
 8. **dnsmasq force-recreates on every proxy-on**: The container is always recreated (`--force-recreate`) to ensure it loads the freshly generated `ipsets.conf`. This adds ~2 seconds to startup.
 
-9. **config.env is shell-only**: `redsocks/redsocks.conf` and `dante/sockd.conf` use app-specific formats and cannot source shell variables. If you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update those two files manually to match. `dnsmasq/dnsmasq.conf` also requires manual updates if you change `DNSIP_LOOP` or `DNSIP_BRIDGE`.
+9. **config.env is shell-only**: `redsocks/redsocks.conf` and `dante/sockd.conf` use app-specific formats and cannot source shell variables. If you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update those two files manually to match. `dnsmasq/dnsmasq.conf` is fully generated by `proxy-on.sh` from `config.env` — no manual sync needed.
 
 ## Common Operations
 
@@ -216,7 +218,7 @@ systemctl --user enable proxy-primer.service
 curl --max-time 5 --socks5 "$DANTE_IP:$DANTE_PORT" https://api.ipify.org
 
 # Check ipset contents
-sudo ipset list "$IPSET_V4_NF" | tail -20
+sudo ipset list "$IPSET_V4_NFX" | tail -20
 
 # Check iptables rules
 sudo iptables -t nat -vnL OUTPUT
