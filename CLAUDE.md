@@ -49,6 +49,8 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `DNSIP_LOOP` | `127.100.53.53` | dnsmasq loopback address (written into generated dnsmasq.conf) |
 | `DNSIP_BRIDGE` | `172.17.0.1` | Docker bridge IP dnsmasq also listens on (written into generated dnsmasq.conf) |
 | `LAN_DNS` | _(empty)_ | Optional: route a local domain to a LAN DNS server (format: `domain/ip`) |
+| `DNS_UPSTREAM` | `9.9.9.9` | Primary upstream DNS dnsmasq forwards to (written into generated dnsmasq.conf) |
+| `DNS_FALLBACK` | `149.112.112.112` | Fallback upstream DNS (Quad9 secondary by default; written into generated dnsmasq.conf) |
 | `IFACE` | _(your value)_ | WiFi interface name |
 | `IPSET_V4_NFX` / `IPSET_V6_NFX` | `netflix_us` / `netflix_us6` | Service group 1 ipset names |
 | `IPSET_V4_SORA` / `IPSET_V6_SORA` | `openai_us` / `openai_us6` | Service group 2 ipset names |
