@@ -12,6 +12,16 @@ Routes traffic for specific services through a remote SOCKS5 proxy over WireGuar
 
 ---
 
+## Deployment modes
+
+Three modes are supported. Choose one based on what you need:
+
+| Mode | What it does |
+|---|---|
+| **dns** | Local dnsmasq forwards `HOME_DOMAIN` (e.g. `arpa.home`) to AdGuard Home on your server. All traffic goes via local ISP. No proxy. |
+| **proxy** | Selective traffic steering via SOCKS5 proxy (existing behaviour). |
+| **both** | DNS forwarding to AdGuard + proxy steering for configured domains. |
+
 ## Setup
 
 ```bash
@@ -21,12 +31,20 @@ cd ~/proxy
 
 # 2. Create your config
 cp config.env.example config.env
-# Edit config.env — at minimum set DANTE_IP, IFACE, and your DOMAINS_*
+# Edit config.env — set DANTE_IP / ADGUARD_IP, IFACE, DEPLOY_MODE, and your DOMAINS_*
 
-# 3. Update dante/sockd.conf on your remote server with your actual values:
-#    internal IP, WAN interface, WireGuard subnet
+# 3. Run server setup on your home server (once)
+~/proxy/scripts/server-setup.sh --mode dns   # or proxy or both
 
-# 4. Enable
+# 4. Run client setup on your laptop (once)
+~/proxy/scripts/client-setup.sh --mode dns   # or proxy or both
+```
+
+### Manual setup (proxy mode only, existing behaviour)
+
+```bash
+# Update dante/sockd.conf on your remote server with your WireGuard IP, WAN interface, subnet
+# Then enable:
 ~/proxy/scripts/proxy-on.sh
 ```
 
@@ -231,8 +249,10 @@ config.env.example          # template — copy to config.env and fill in values
 config.env                  # your real config (gitignored)
 proxy-primer.service        # optional systemd user service for boot auto-start
 scripts/
-  proxy-on.sh               # enable proxy
-  proxy-off.sh              # disable proxy
+  server-setup.sh           # one-time server installer (--mode dns|proxy|both)
+  client-setup.sh           # one-time client installer (--mode dns|proxy|both)
+  proxy-on.sh               # enable proxy (runtime toggle)
+  proxy-off.sh              # disable proxy (runtime toggle)
   proxy-status.sh           # diagnostics
 dnsmasq/
   docker-compose.yml        # runs proxy-dnsmasq container

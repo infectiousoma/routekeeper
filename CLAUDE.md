@@ -67,6 +67,10 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `DOMAINS_SORA` | _(your domains)_ | Domains for service group 2 |
 | `DOMAINS_XF` | _(your domains)_ | Domains for service group 3 |
 | `DOMAINS_FOO` + `IPSET_V4_FOO` + `IPSET_V6_FOO` | _(any suffix)_ | Pattern for adding new groups — suffix must match across all three |
+| `ADGUARD_IP` | _(your value)_ | AdGuard Home server WireGuard IP (typically same as `DANTE_IP`) |
+| `ADGUARD_PORT` | `53` | AdGuard DNS port |
+| `HOME_DOMAIN` | `arpa.home` | Local domain suffix AdGuard is authoritative for (e.g. `*.arpa.home → Traefik`) |
+| `DEPLOY_MODE` | `proxy` | Default mode for setup scripts: `dns`, `proxy`, or `both` |
 
 ## Kernel ipsets
 
@@ -100,6 +104,8 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `proxy-on.sh` | **Main enable script**: generates ipsets.conf, starts dnsmasq + redsocks, creates ipsets, primes DNS, installs iptables rules |
 | `proxy-off.sh` | **Main disable script**: removes iptables rules, restores firewall baseline, destroys ipsets, stops redsocks |
 | `proxy-status.sh` | Diagnostic: DNS config, container status, ipset sizes, iptables rules |
+| `server-setup.sh` | **One-time server installer**: verifies WireGuard, optionally starts Dante (`--mode dns\|proxy\|both`) |
+| `client-setup.sh` | **One-time client installer**: writes new config vars, starts dnsmasq in DNS mode and/or configures proxy (`--mode dns\|proxy\|both`) |
 
 ### `redsocks/`
 
@@ -147,6 +153,23 @@ proxy-off.sh
   |-- restores: host DNS via backend saved in ~/.proxy-firewall-baseline/dns.backend
   |-- destroys: kernel ipsets (all 6)
   |-- stops: redsocks container (dnsmasq stays up — DNS continues to work)
+
+server-setup.sh  [one-time, runs on home server]
+  |-- sources: config.env
+  |-- verifies: WireGuard wg0 interface
+  |-- (dns|both) verifies: AdGuard reachable at ADGUARD_IP:ADGUARD_PORT
+  |-- (proxy|both) starts: dante/docker-compose.yml + verifies Dante SOCKS5
+
+client-setup.sh  [one-time, runs on laptop]
+  |-- sources: config.env
+  |-- backs up: config.env → config.env.bak.YYYYMMDD_HHMMSS
+  |-- appends to config.env: ADGUARD_IP, ADGUARD_PORT, HOME_DOMAIN, DEPLOY_MODE (if absent)
+  |-- (both) sets: LAN_DNS=$HOME_DOMAIN/$ADGUARD_IP in config.env
+  |-- (dns) generates: dnsmasq/dnsmasq.conf  (AdGuard server line for HOME_DOMAIN, no ipsets)
+  |-- (dns) starts: dnsmasq/docker-compose.yml
+  |-- (dns) modifies: host DNS via detect_dns_backend() → DNSIP_LOOP
+  |-- (proxy|both) optionally installs: proxy-primer.service for boot auto-start
+  |-- (proxy|both) optionally runs: proxy-on.sh
 
 Dante (remote server)
   |-- dante/docker-compose.yml + dante/sockd.conf

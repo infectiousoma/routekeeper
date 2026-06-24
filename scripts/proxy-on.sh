@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# proxy-on.sh — dnsmasq+ipset+redsocks (Netflix+Sora), "self-healing"
+# proxy-on.sh — dnsmasq+ipset+redsocks, "self-healing"
+# Routing modes (--routing flag or ROUTING_MODE in config.env):
+#   selective   — redirect only configured domains via ipsets (default)
+#   transparent — redirect all TCP through redsocks → Dante
+#   gateway     — add default route via wg0 (server needs ip_forward + MASQUERADE)
 set -Eeuo pipefail
 
-# Derive repo root from script location so this works from any clone path.
-# Set path vars before sourcing config.env — the ${VAR:-default} in that file
-# will not override values that are already set.
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DNSMASQ_DIR="${DNSMASQ_DIR:-$REPO_DIR/dnsmasq}"
 REDSOCKS_DIR="${REDSOCKS_DIR:-$REPO_DIR/redsocks}"
@@ -12,12 +13,24 @@ echo "[info] repo root: $REPO_DIR"
 # shellcheck source=../config.env
 source "$REPO_DIR/config.env"
 
+# --routing flag overrides ROUTING_MODE from config.env
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --routing) ROUTING_MODE="$2"; shift 2 ;;
+    *) echo "[warn] Unknown arg: $1" ;;
+  esac
+done
+ROUTING_MODE="${ROUTING_MODE:-selective}"
+[[ "$ROUTING_MODE" =~ ^(selective|transparent|gateway)$ ]] || {
+  echo "[err] --routing must be selective, transparent, or gateway"; exit 1
+}
+echo "[info] routing mode: $ROUTING_MODE"
+
 mkdir -p "$BASELINE_DIR"
 
 say(){ printf '%s\n' "$*"; }
 
 # Returns the suffix of every DOMAINS_* variable that has matching IPSET_V4_* and IPSET_V6_* vars.
-# E.g. DOMAINS_NFX + IPSET_V4_NFX + IPSET_V6_NFX → "NFX"; DOMAINS_SORA + IPSET_V4_SORA + IPSET_V6_SORA → "SORA"
 all_suffixes(){
   compgen -v | grep '^DOMAINS_' | sed 's/^DOMAINS_//' | sort | while read -r s; do
     local v4="IPSET_V4_${s}" v6="IPSET_V6_${s}"
@@ -42,13 +55,10 @@ detect_dns_backend(){
 }
 
 ensure_alias(){
-  # make loopback alias portable; we don’t need a LAN alias anymore
   : # using 127.100.53.53 (no ip addr add needed)
 }
 
 generate_ipsets_conf(){
-  # Write dnsmasq ipset= rules from config.env into dnsmasq.d/ipsets.conf.
-  # This runs before the container starts so dnsmasq picks them up at launch.
   local dir="$DNSMASQ_DIR/dnsmasq.d"
   local out="$dir/ipsets.conf"
   mkdir -p "$dir"
@@ -82,7 +92,6 @@ generate_dnsmasq_conf(){
 
 dnsmasq_up(){
   generate_dnsmasq_conf
-  # force-recreate so the container always loads the freshly generated ipsets.conf
   ( cd "$DNSMASQ_DIR" && docker compose up -d --force-recreate )
   wait_for "dnsmasq $DNSIP_LOOP:53"   bash -lc "ss -lnup | grep -q '$DNSIP_LOOP:53'"
   wait_for "dnsmasq $DNSIP_BRIDGE:53" bash -lc "ss -lnup | grep -q '$DNSIP_BRIDGE:53'"
@@ -130,7 +139,6 @@ ensure_sets(){
 }
 
 prime_sets(){
-  # Actively "tickle" dnsmasq so it fills the ipsets before rules go in.
   local dns="$DNSIP_LOOP"
   local all_domains=() first_v4=""
   for suffix in $(all_suffixes); do
@@ -174,10 +182,10 @@ EOF
 
 ensure_redsocks(){
   ( cd "$REDSOCKS_DIR" && docker compose up -d --force-recreate )
-  wait_for "redsocks $REDHOST:$REDPORT" bash -lc "ss -ltn | grep -q '${REDHOST//./\\.}:$REDPORT\\b'"
+  wait_for "redsocks $REDHOST:$REDPORT" bash -lc "ss -ltn | grep -q '${REDHOST//./\\.}:$REDPORT\b'"
 }
 
-install_rules(){
+install_selective_rules(){
   for suffix in $(all_suffixes); do
     local v4="IPSET_V4_${suffix}" v6="IPSET_V6_${suffix}"
     sudo iptables -t nat -C OUTPUT -p tcp -m set --match-set "${!v4}" dst -j REDIRECT --to-ports "$REDPORT" 2>/dev/null \
@@ -195,6 +203,52 @@ install_rules(){
   done
 }
 
+install_transparent_rules(){
+  # Build exclusion list: loopback + private nets + WireGuard peer (avoid routing loop)
+  local excl_csv="127.0.0.0/8,${TRANSPARENT_EXCLUDE:-10.0.0.0/8,172.16.0.0/12,192.168.0.0/16},${DANTE_IP}/32"
+
+  # Create/flush chain
+  sudo iptables -t nat -N PROXY_REDIRECT 2>/dev/null || sudo iptables -t nat -F PROXY_REDIRECT
+
+  # RETURN for each excluded network
+  IFS=',' read -ra _nets <<< "$excl_csv"
+  for _net in "${_nets[@]}"; do
+    local net="${_net// /}"
+    [[ -n "$net" ]] && sudo iptables -t nat -A PROXY_REDIRECT -d "$net" -j RETURN
+  done
+
+  # Redirect all remaining TCP to redsocks
+  sudo iptables -t nat -A PROXY_REDIRECT -p tcp -j REDIRECT --to-ports "$REDPORT"
+
+  # Jump into chain from OUTPUT
+  sudo iptables -t nat -C OUTPUT -p tcp -j PROXY_REDIRECT 2>/dev/null \
+    || sudo iptables -t nat -I OUTPUT 1 -p tcp -j PROXY_REDIRECT
+
+  if [[ "$BLOCK_QUIC" == "true" ]]; then
+    sudo iptables -C OUTPUT -p udp --dport 443 ! -d 127.0.0.0/8 -j REJECT 2>/dev/null \
+      || sudo iptables -I OUTPUT 1 -p udp --dport 443 ! -d 127.0.0.0/8 -j REJECT
+  fi
+
+  say "[ok] Transparent rules: all TCP (excl. loopback/private/${DANTE_IP}) → redsocks → Dante"
+}
+
+install_gateway_rules(){
+  # Add low-metric default route via WireGuard peer — beats ISP default (typically metric 100+)
+  # Requires server: sysctl net.ipv4.ip_forward=1 + iptables MASQUERADE on WAN
+  sudo ip route add default dev wg0 via "$DANTE_IP" metric 10 2>/dev/null \
+    || sudo ip route replace default dev wg0 via "$DANTE_IP" metric 10
+  say "[ok] Default route via wg0 ($DANTE_IP, metric 10)"
+  say "[warn] Home server must have ip_forward=1 + MASQUERADE on WAN — run: server-setup.sh --mode gateway"
+}
+
+install_rules(){
+  case "$ROUTING_MODE" in
+    selective)   install_selective_rules ;;
+    transparent) install_transparent_rules ;;
+    gateway)     install_gateway_rules ;;
+  esac
+}
+
 save_baseline_once(){
   if [[ "$RESTORE_ON_OFF" == "true" ]]; then
     [[ -f "$BASELINE_DIR/iptables.v4"  ]] || sudo iptables-save  > "$BASELINE_DIR/iptables.v4"
@@ -205,47 +259,87 @@ save_baseline_once(){
 
 # ----------------- bring-up sequence -----------------
 save_baseline_once
-# clean stale nft rules that may reference old set names (safe no-op)
-_nft_pat=$(for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; echo "${!_v}"; done | paste -sd'|')
-sudo nft -a list ruleset 2>/dev/null \
-| awk -v pat="($_nft_pat)" '
-  $1=="table"{fam=$2;tab=$3}
-  $1=="chain"{chn=$2}
-  $0 ~ pat { for(i=1;i<=NF;i++) if($i=="handle") h=$(i+1); if(h) print "nft delete rule",fam,tab,chn,"handle",h; h="" }
-' | sudo sh 2>/dev/null || true
+echo "$ROUTING_MODE" > "$BASELINE_DIR/routing.mode"
 
-ensure_alias
-ensure_sets
-generate_ipsets_conf
-dnsmasq_up
-[[ "$SELF_DNS" == "true" ]] && set_iface_dns
-prime_sets
-
-# print ipset population counts for all sets
-say "[ok] ipset population after priming:"
-for _s in $(all_suffixes); do
-  for _setvar in "IPSET_V4_${_s}" "IPSET_V6_${_s}"; do
-    _cnt=$(sudo ipset list "${!_setvar}" 2>/dev/null | awk '/Number of entries/{print $4}')
-    say "  ${!_setvar}: ${_cnt:-0} entries"
-  done
-done
-
-# refuse to continue if the first ipset is still empty (misconfig)
-_first_v4_set=""
-for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; _first_v4_set="${!_v}"; break; done
-_first_cnt=$(sudo ipset list "$_first_v4_set" 2>/dev/null | awk '/Number of entries/{print $4}')
-if [[ -z "${_first_cnt:-}" || "$_first_cnt" -eq 0 ]]; then
-  say "[err] $_first_v4_set is empty — check dnsmasq ipset= lines & host DNS ($DNSIP_LOOP)"
-  exit 1
+# Clean stale nft rules referencing old ipset names (selective mode only)
+if [[ "$ROUTING_MODE" == "selective" ]]; then
+  _nft_pat=$(for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; echo "${!_v}"; done | paste -sd'|')
+  sudo nft -a list ruleset 2>/dev/null \
+  | awk -v pat="($_nft_pat)" '
+    $1=="table"{fam=$2;tab=$3}
+    $1=="chain"{chn=$2}
+    $0 ~ pat { for(i=1;i<=NF;i++) if($i=="handle") h=$(i+1); if(h) print "nft delete rule",fam,tab,chn,"handle",h; h="" }
+  ' | sudo sh 2>/dev/null || true
 fi
 
-generate_redsocks_conf
-ensure_redsocks
+ensure_alias
+
+# Selective mode: create ipsets + generate ipsets.conf with domain→ipset rules
+# Other modes: write empty ipsets.conf so dnsmasq doesn't try to write non-existent sets
+if [[ "$ROUTING_MODE" == "selective" ]]; then
+  ensure_sets
+  generate_ipsets_conf
+else
+  mkdir -p "$DNSMASQ_DIR/dnsmasq.d"
+  : > "$DNSMASQ_DIR/dnsmasq.d/ipsets.conf"
+  say "[ok] ipsets.conf cleared (not needed in $ROUTING_MODE mode)"
+fi
+
+dnsmasq_up
+[[ "$SELF_DNS" == "true" ]] && set_iface_dns
+
+# Selective mode: prime ipsets and verify they populated
+if [[ "$ROUTING_MODE" == "selective" ]]; then
+  prime_sets
+
+  say "[ok] ipset population after priming:"
+  for _s in $(all_suffixes); do
+    for _setvar in "IPSET_V4_${_s}" "IPSET_V6_${_s}"; do
+      _cnt=$(sudo ipset list "${!_setvar}" 2>/dev/null | awk '/Number of entries/{print $4}')
+      say "  ${!_setvar}: ${_cnt:-0} entries"
+    done
+  done
+
+  _first_v4_set=""
+  for _s in $(all_suffixes); do _v="IPSET_V4_${_s}"; _first_v4_set="${!_v}"; break; done
+  _first_cnt=$(sudo ipset list "$_first_v4_set" 2>/dev/null | awk '/Number of entries/{print $4}')
+  if [[ -z "${_first_cnt:-}" || "$_first_cnt" -eq 0 ]]; then
+    say "[err] $_first_v4_set is empty — check dnsmasq ipset= lines & host DNS ($DNSIP_LOOP)"
+    exit 1
+  fi
+fi
+
+# Redsocks: needed for selective and transparent, not gateway
+if [[ "$ROUTING_MODE" != "gateway" ]]; then
+  generate_redsocks_conf
+  ensure_redsocks
+fi
+
 install_rules
 
-echo "[ok] redsocks @ $(ss -ltn | awk '/'"$REDHOST"':'"$REDPORT"'/{print $4}')"
-echo "[ok] nat OUTPUT redirects:"
-sudo iptables -t nat -vnL OUTPUT | awk '/REDIRECT/ && /'"$REDPORT"'/ && /match-set/ {print}'
-echo "[ok] Dante SOCKS test:"
-( curl --max-time 5 --socks5 "$DANTE_IP:$DANTE_PORT" https://api.ipify.org && echo ) || echo "(Dante unreachable; rules still installed)"
-echo "[done] Proxy ENABLED (Netflix + Sora)"
+# Status output
+case "$ROUTING_MODE" in
+  selective)
+    echo "[ok] redsocks @ $(ss -ltn | awk '/'"$REDHOST"':'"$REDPORT"'/{print $4}')"
+    echo "[ok] nat OUTPUT redirects:"
+    sudo iptables -t nat -vnL OUTPUT | awk '/REDIRECT/ && /'"$REDPORT"'/ && /match-set/ {print}'
+    echo "[ok] Dante SOCKS test:"
+    ( curl --max-time 5 --socks5 "$DANTE_IP:$DANTE_PORT" https://api.ipify.org && echo ) \
+      || echo "(Dante unreachable; rules still installed)"
+    echo "[done] Proxy ENABLED (selective routing)"
+    ;;
+  transparent)
+    echo "[ok] redsocks @ $(ss -ltn | awk '/'"$REDHOST"':'"$REDPORT"'/{print $4}')"
+    echo "[ok] Transparent redirect active — all TCP → redsocks → Dante"
+    sudo iptables -t nat -vnL OUTPUT | grep -E 'PROXY_REDIRECT|REDIRECT' || true
+    echo "[ok] Dante SOCKS test:"
+    ( curl --max-time 5 --socks5 "$DANTE_IP:$DANTE_PORT" https://api.ipify.org && echo ) \
+      || echo "(Dante unreachable; rules still installed)"
+    echo "[done] Proxy ENABLED (transparent — all TCP via Dante)"
+    ;;
+  gateway)
+    echo "[ok] Gateway route active:"
+    ip route show | grep wg0 || true
+    echo "[done] Proxy ENABLED (gateway — all traffic over WireGuard)"
+    ;;
+esac
