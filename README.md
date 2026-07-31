@@ -77,6 +77,7 @@ All runtime values are in **`~/proxy/config.env`** (copied from `config.env.exam
 | `REDPORT` | redsocks local listener port |
 | `DNSIP_LOOP` | dnsmasq loopback address |
 | `IFACE` | WiFi interface name |
+| `DNS_UPSTREAM` / `DNS_FALLBACK` | Upstream resolvers dnsmasq forwards to |
 | `DOMAINS_NFX` / `DOMAINS_SORA` / `DOMAINS_XF` | Domain lists for the built-in service groups |
 
 Only one config file requires manual editing — `dante/sockd.conf` on your remote server (it needs your WireGuard IP, WAN interface, and subnet, which vary per machine).
@@ -87,6 +88,56 @@ To route a local domain through your LAN DNS server (e.g. for `.home.arpa` hostn
 ```
 LAN_DNS="home.arpa/192.168.0.99"
 ```
+
+### Choosing an upstream resolver
+
+dnsmasq must stay in the resolution path (it populates the ipsets), but where it forwards queries is up to you via `DNS_UPSTREAM` / `DNS_FALLBACK`:
+
+- **Public resolver** (default): `DNS_UPSTREAM=9.9.9.9` — plain DNS to Quad9.
+- **AdGuard Home over WireGuard**: point at your server's WireGuard IP (e.g. `DNS_UPSTREAM=10.0.2.7`). Filtered, but every lookup rides the tunnel.
+- **AdGuard DNS (the hosted service) via AdGuardDNSCLI**: run AdGuard's official client daemon locally and use it as dnsmasq's upstream. Queries go out encrypted (DoH) directly over your WAN — no WireGuard dependency for DNS. See below.
+
+dnsmasq accepts `IP#port` syntax in these variables (e.g. `DNS_UPSTREAM=127.0.0.153#5353`) if your upstream listens on a non-standard port.
+
+### Using AdGuard DNS via AdGuardDNSCLI
+
+[AdGuardDNSCLI](https://adguard-dns.io/kb/) is AdGuard's client daemon for connecting a device to your AdGuard DNS account. The chain becomes:
+
+```
+apps → dnsmasq (ipset tagging) → AdGuardDNSCLI (127.0.0.153:53) → AdGuard DNS (DoH)
+```
+
+1. In the AdGuard DNS dashboard, add a device and copy its **DNS-over-HTTPS** address — it looks like `https://d.adguard-dns.com/dns-query/<device_id>`. (The dashboard also lists DoT `tls://<id>.d.adguard-dns.com` and DoQ `quic://<id>.d.adguard-dns.com` addresses for the same device; any of them works in the config below, DoH is the safe default.)
+
+2. Download and unpack the CLI from its releases page, then install it as a service:
+   ```bash
+   ./adguarddns-cli -s install -v
+   ```
+
+3. Edit its `config.yaml`:
+   - `dns.server.listen_addresses`: replace the auto-generated list (it binds every interface and will collide with dnsmasq on `172.17.0.1:53` and anything else on port 53) with a single dedicated loopback:
+     ```yaml
+     listen_addresses:
+         - address: 127.0.0.153:53
+     ```
+   - `dns.upstream.groups.default.address`: your device's DoH address from step 1.
+
+4. Start it and verify:
+   ```bash
+   ./adguarddns-cli -s start -v
+   nslookup example.com 127.0.0.153
+   ```
+
+5. In `config.env`:
+   ```env
+   DNS_UPSTREAM=127.0.0.153
+   DNS_FALLBACK=9.9.9.9
+   ```
+   With a public fallback, DNS keeps working if the daemon dies — but those queries leak unfiltered. Set `DNS_FALLBACK=127.0.0.153` instead to hard-fail.
+
+6. Re-run `~/proxy/scripts/proxy-on.sh` to regenerate `dnsmasq.conf`. Lookups should now appear under your device in the AdGuard DNS dashboard.
+
+Notes: `LAN_DNS` still routes your home domain wherever you point it — only the default upstream changes. dnsmasq's cache sits in front of the daemon, which also keeps you further under the plan's monthly query cap.
 
 ### Adding a new service group
 
