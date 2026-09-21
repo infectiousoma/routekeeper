@@ -112,7 +112,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `README.md` | User-facing setup and usage documentation |
 | `config.env.example` | **Template** — copy to `config.env` and fill in values |
 | `config.env` | **Single source of truth for all runtime config** (gitignored) |
-| `proxy-primer.service` | Optional systemd user service for boot auto-start |
+| `proxy-primer.service` | Optional systemd user service for boot auto-start. Template: `@REPO_DIR@` is substituted at install time (`client-setup.sh` or the `sed` command in README), so the clone directory name does not matter |
 | `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo). Template: `@REPO_DIR@` is substituted at install time, so the clone directory name does not matter |
 | `CLAUDE.md` | This file — architecture reference for AI-assisted development |
 
@@ -240,7 +240,8 @@ After priming, entry counts for all sets are printed. If the first ipset is stil
 ### Auto-start on boot
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/proxy/proxy-primer.service ~/.config/systemd/user/
+cd /path/to/your/clone   # repo root; the unit's @REPO_DIR@ placeholder is filled in by sed
+sed "s|@REPO_DIR@|$PWD|g" proxy-primer.service > ~/.config/systemd/user/proxy-primer.service
 systemctl --user daemon-reload
 systemctl --user enable proxy-primer.service
 ```

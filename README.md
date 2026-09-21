@@ -289,7 +289,8 @@ sudo ipset save     > ~/.proxy-firewall-baseline/ipset.save
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp ~/proxy/proxy-primer.service ~/.config/systemd/user/
+cd /path/to/your/clone                    # the repo root, whatever you named it
+sed "s|@REPO_DIR@|$PWD|g" proxy-primer.service > ~/.config/systemd/user/proxy-primer.service
 systemctl --user daemon-reload
 systemctl --user enable proxy-primer.service
 ```

@@ -1,3 +1,4 @@
+# Install with the sed command in README.md (or client-setup.sh) — it fills in @REPO_DIR@ with your clone path.
 [Unit]
 Description=Enable US proxy (Netflix, OpenAI, Xfinity traffic steering)
 After=network-online.target docker.service
@@ -6,8 +7,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=%h/proxy/scripts/proxy-on.sh
-ExecStop=%h/proxy/scripts/proxy-off.sh
+ExecStart=@REPO_DIR@/scripts/proxy-on.sh
+ExecStop=@REPO_DIR@/scripts/proxy-off.sh
 
 [Install]
 WantedBy=default.target
