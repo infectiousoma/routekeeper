@@ -1,3 +1,4 @@
+# Install with the sed command in README.md — it fills in @REPO_DIR@ with your clone path.
 [Unit]
 Description=Re-establish proxy steering after WireGuard/network outages
 After=network-online.target docker.service proxy-primer.service
@@ -5,7 +6,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/proxy/scripts/proxy-watch.sh
+ExecStart=@REPO_DIR@/scripts/proxy-watch.sh
 Restart=on-failure
 RestartSec=10
 

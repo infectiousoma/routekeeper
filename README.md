@@ -303,11 +303,13 @@ systemctl --user enable proxy-primer.service
 Requires passwordless `sudo` (the scripts call it). If the proxy was enabled before you added the watcher, run `proxy-on.sh` once so it writes the `enabled` marker.
 
 ```bash
-cp ~/proxy/proxy-watch.service ~/.config/systemd/user/
+cd /path/to/your/clone                    # the repo root, whatever you named it
+mkdir -p ~/.config/systemd/user
+sed "s|@REPO_DIR@|$PWD|" proxy-watch.service > ~/.config/systemd/user/proxy-watch.service
 systemctl --user daemon-reload
 systemctl --user enable --now proxy-watch.service
 journalctl --user -u proxy-watch -f      # follow
-~/proxy/scripts/proxy-watch.sh --once    # one manual check + repair
+./scripts/proxy-watch.sh --once           # one manual check + repair
 ```
 
 Tunables (`WATCH_INTERVAL`, `WATCH_FAIL_THRESHOLD`, `WATCH_RECONCILE_EVERY`) are in `config.env.example`.

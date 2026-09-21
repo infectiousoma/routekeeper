@@ -113,7 +113,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `config.env.example` | **Template** — copy to `config.env` and fill in values |
 | `config.env` | **Single source of truth for all runtime config** (gitignored) |
 | `proxy-primer.service` | Optional systemd user service for boot auto-start |
-| `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo) |
+| `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo). Template: `@REPO_DIR@` is substituted at install time, so the clone directory name does not matter |
 | `CLAUDE.md` | This file — architecture reference for AI-assisted development |
 
 ### `scripts/`
@@ -247,11 +247,13 @@ systemctl --user enable proxy-primer.service
 
 ### Auto-recovery after WireGuard / network outages
 ```bash
-cp ~/proxy/proxy-watch.service ~/.config/systemd/user/
+cd /path/to/your/clone   # repo root; the unit's @REPO_DIR@ placeholder is filled in by sed
+mkdir -p ~/.config/systemd/user
+sed "s|@REPO_DIR@|$PWD|" proxy-watch.service > ~/.config/systemd/user/proxy-watch.service
 systemctl --user daemon-reload
 systemctl --user enable --now proxy-watch.service
 journalctl --user -u proxy-watch -f
-~/proxy/scripts/proxy-watch.sh --once   # manual check + repair
+./scripts/proxy-watch.sh --once   # manual check + repair
 ```
 Full-outage behavior is unchanged: steered TCP is still redirected to redsocks and fails while Dante is unreachable (no leak of the real IP). The watcher repairs local drift; it does not fail open.
 
