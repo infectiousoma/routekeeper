@@ -70,6 +70,7 @@ All runtime-configurable values are in **`config.env`** (copied from `config.env
 | `ADGUARD_IP` | _(your value)_ | AdGuard Home server WireGuard IP (typically same as `DANTE_IP`) |
 | `ADGUARD_PORT` | `53` | AdGuard DNS port |
 | `HOME_DOMAIN` | `arpa.home` | Local domain suffix AdGuard is authoritative for (e.g. `*.arpa.home → Traefik`) |
+| `WATCH_INTERVAL` / `WATCH_FAIL_THRESHOLD` / `WATCH_RECONCILE_EVERY` | `5` / `3` / `30` | `proxy-watch.sh`: probe period (s), consecutive failed probes = down, drift-check period while up (s) |
 | `DEPLOY_MODE` | `proxy` | Default mode for setup scripts: `dns`, `proxy`, or `both` |
 
 ## AdGuard DNS upstream via AdGuardDNSCLI (optional)
@@ -112,6 +113,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `config.env.example` | **Template** — copy to `config.env` and fill in values |
 | `config.env` | **Single source of truth for all runtime config** (gitignored) |
 | `proxy-primer.service` | Optional systemd user service for boot auto-start |
+| `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo) |
 | `CLAUDE.md` | This file — architecture reference for AI-assisted development |
 
 ### `scripts/`
@@ -121,6 +123,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `proxy-on.sh` | **Main enable script**: generates ipsets.conf, starts dnsmasq + redsocks, creates ipsets, primes DNS, installs iptables rules |
 | `proxy-off.sh` | **Main disable script**: removes iptables rules, restores firewall baseline, destroys ipsets, stops redsocks |
 | `proxy-status.sh` | Diagnostic: DNS config, container status, ipset sizes, iptables rules |
+| `proxy-watch.sh` | **Watchdog** (`proxy-watch.service`): probes Dante, on recovery/periodically checks for drift and re-runs `proxy-on.sh --if-enabled` only if something is missing. `--once` for a manual check |
 | `server-setup.sh` | **One-time server installer**: verifies WireGuard, optionally starts Dante (`--mode dns\|proxy\|both`) |
 | `client-setup.sh` | **One-time client installer**: writes new config vars, starts dnsmasq in DNS mode and/or configures proxy (`--mode dns\|proxy\|both`) |
 
@@ -162,14 +165,28 @@ proxy-on.sh
   |-- modifies: iptables (nat OUTPUT REDIRECT + filter OUTPUT REJECT for QUIC/IPv6)
   |-- modifies: host DNS via detect_dns_backend() → resolvectl | nmcli | /etc/resolv.conf
   |-- saves: ~/.proxy-firewall-baseline/ (first run only)
+  |-- locks: ~/.proxy-firewall-baseline/lock (flock, shared with proxy-off.sh)
+  |-- writes: ~/.proxy-firewall-baseline/enabled (marker, after rules installed)
+  |-- flag: --if-enabled  (exit 0 unless marker exists; used by proxy-watch.sh)
 
 proxy-off.sh
   |-- sources: config.env
+  |-- locks: ~/.proxy-firewall-baseline/lock; removes: enabled marker (first, so the watcher stops repairing)
   |-- removes: iptables rules (all 3 service groups, v4 + v6)
   |-- restores: ~/.proxy-firewall-baseline/ (iptables + ipset)
   |-- restores: host DNS via backend saved in ~/.proxy-firewall-baseline/dns.backend
   |-- destroys: kernel ipsets (all 6)
   |-- stops: redsocks container (dnsmasq stays up — DNS continues to work)
+
+proxy-watch.sh  [long-running, proxy-watch.service; or --once]
+  |-- sources: config.env (WATCH_INTERVAL, WATCH_FAIL_THRESHOLD, WATCH_RECONCILE_EVERY)
+  |-- requires: passwordless sudo (exits 1 otherwise)
+  |-- probes: TCP connect to DANTE_IP:DANTE_PORT every WATCH_INTERVAL s
+  |-- on recovery + every WATCH_RECONCILE_EVERY s: find_problem() checks dnsmasq, redsocks,
+  |     ipsets + REDIRECT rules (selective) | PROXY_REDIRECT jump (transparent) | wg0 route (gateway),
+  |     and $IFACE DNS
+  |-- on drift: runs proxy-on.sh --if-enabled --routing <mode from $BASELINE_DIR/routing.mode>
+  |-- idle while $BASELINE_DIR/enabled marker is absent
 
 server-setup.sh  [one-time, runs on home server]
   |-- sources: config.env
@@ -228,6 +245,16 @@ systemctl --user daemon-reload
 systemctl --user enable proxy-primer.service
 ```
 
+### Auto-recovery after WireGuard / network outages
+```bash
+cp ~/proxy/proxy-watch.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now proxy-watch.service
+journalctl --user -u proxy-watch -f
+~/proxy/scripts/proxy-watch.sh --once   # manual check + repair
+```
+Full-outage behavior is unchanged: steered TCP is still redirected to redsocks and fails while Dante is unreachable (no leak of the real IP). The watcher repairs local drift; it does not fail open.
+
 ## Quirks and Assumptions
 
 1. **DNS backend detection**: `set_iface_dns` auto-detects the resolver in use via `detect_dns_backend()`: tries `resolvectl` (systemd-resolved) first, falls back to `nmcli` (NetworkManager), then falls back to direct `/etc/resolv.conf` edit. The chosen backend is saved to `$BASELINE_DIR/dns.backend` so `proxy-off.sh` can restore using the same method. This makes the scripts portable across Debian/Ubuntu/Arch systems where systemd-resolved may not be installed or active.
@@ -254,6 +281,8 @@ systemctl --user enable proxy-primer.service
 9. **AdGuardDNSCLI holds config in memory**: The daemon reads `config.yaml` only at process start — after editing it (e.g. changing the device ID), the running process still uses the old values until `systemctl restart AdGuardDNSCLI`. Symptom of a stale process: SERVFAIL from `127.0.0.153` while a fresh foreground run of the same config works.
 
 10. **config.env is shell-only**: `redsocks/redsocks.conf` and `dante/sockd.conf` use app-specific formats and cannot source shell variables. If you change `DANTE_IP`, `DANTE_PORT`, or `REDPORT` in `config.env`, update those two files manually to match. `dnsmasq/dnsmasq.conf` is fully generated by `proxy-on.sh` from `config.env` — no manual sync needed.
+
+11. **Enabled marker + lock**: `proxy-on.sh` touches `$BASELINE_DIR/enabled` after installing rules; `proxy-off.sh` removes it first. Both hold `flock` on `$BASELINE_DIR/lock`. `proxy-watch.sh` only repairs while the marker exists and calls `proxy-on.sh --if-enabled` (re-checks the marker under the lock), so it can never re-enable a proxy the user disabled. Kernel state (ipsets, iptables) and both containers survive a WireGuard drop; the usual real drift is `$IFACE` DNS reset by a WiFi reconnect, or the `wg0` default route in gateway mode. If you add new state to `proxy-on.sh`, add a matching check to `find_problem()` in `proxy-watch.sh`.
 
 ## Common Operations
 

@@ -14,9 +14,12 @@ echo "[info] repo root: $REPO_DIR"
 source "$REPO_DIR/config.env"
 
 # --routing flag overrides ROUTING_MODE from config.env
+# --if-enabled: no-op unless the proxy is currently enabled (used by proxy-watch.sh)
+IF_ENABLED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --routing) ROUTING_MODE="$2"; shift 2 ;;
+    --if-enabled) IF_ENABLED=1; shift ;;
     *) echo "[warn] Unknown arg: $1" ;;
   esac
 done
@@ -27,6 +30,12 @@ ROUTING_MODE="${ROUTING_MODE:-selective}"
 echo "[info] routing mode: $ROUTING_MODE"
 
 mkdir -p "$BASELINE_DIR"
+
+# Serialize with proxy-off.sh so a watcher repair can't race a manual disable
+exec 9>"$BASELINE_DIR/lock"; flock 9
+if [[ "$IF_ENABLED" == 1 && ! -f "$BASELINE_DIR/enabled" ]]; then
+  echo "[info] proxy not enabled; nothing to do"; exit 0
+fi
 
 say(){ printf '%s\n' "$*"; }
 
@@ -316,6 +325,7 @@ if [[ "$ROUTING_MODE" != "gateway" ]]; then
 fi
 
 install_rules
+touch "$BASELINE_DIR/enabled"   # marker read by proxy-watch.sh; removed by proxy-off.sh
 
 # Status output
 case "$ROUTING_MODE" in

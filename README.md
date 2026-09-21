@@ -180,7 +180,10 @@ Names are configurable via `IPSET_V4_NFX`, `IPSET_V4_SORA`, `IPSET_V4_XF` (and t
 9. Prints entry counts for all sets; aborts if the first ipset is still empty
 10. Starts redsocks container
 11. Installs iptables rules (NAT REDIRECT + QUIC block + IPv6 REJECT)
-12. Runs a Dante connectivity test
+12. Writes the `enabled` marker (`~/.proxy-firewall-baseline/enabled`) that `proxy-watch.sh` checks
+13. Runs a Dante connectivity test
+
+`proxy-on.sh` and `proxy-off.sh` share a lock, so they never run concurrently. `proxy-on.sh --if-enabled` does nothing unless the marker exists (used by the watchdog).
 
 ---
 
@@ -293,18 +296,38 @@ systemctl --user enable proxy-primer.service
 
 ---
 
+## Auto-recovery after WireGuard / network outages (optional)
+
+`proxy-watch.sh` probes `DANTE_IP:DANTE_PORT`. When the link comes back after an outage — and every `WATCH_RECONCILE_EVERY` seconds while it is up — it checks that dnsmasq, redsocks, the ipsets, the iptables rules (or gateway route) and the `$IFACE` DNS setting are still in place. Only if something drifted (typically the `$IFACE` DNS reset by a WiFi reconnect, or a missing `wg0` default route in gateway mode) does it re-run `proxy-on.sh`. It stays idle while the proxy is disabled, so `proxy-off.sh` is never undone.
+
+Requires passwordless `sudo` (the scripts call it). If the proxy was enabled before you added the watcher, run `proxy-on.sh` once so it writes the `enabled` marker.
+
+```bash
+cp ~/proxy/proxy-watch.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now proxy-watch.service
+journalctl --user -u proxy-watch -f      # follow
+~/proxy/scripts/proxy-watch.sh --once    # one manual check + repair
+```
+
+Tunables (`WATCH_INTERVAL`, `WATCH_FAIL_THRESHOLD`, `WATCH_RECONCILE_EVERY`) are in `config.env.example`.
+
+---
+
 ## Files
 
 ```
 config.env.example          # template — copy to config.env and fill in values
 config.env                  # your real config (gitignored)
 proxy-primer.service        # optional systemd user service for boot auto-start
+proxy-watch.service         # optional systemd user service: auto-recovery watchdog
 scripts/
   server-setup.sh           # one-time server installer (--mode dns|proxy|both)
   client-setup.sh           # one-time client installer (--mode dns|proxy|both)
   proxy-on.sh               # enable proxy (runtime toggle)
   proxy-off.sh              # disable proxy (runtime toggle)
   proxy-status.sh           # diagnostics
+  proxy-watch.sh            # watchdog: repairs steering after WireGuard/network outages
 dnsmasq/
   docker-compose.yml        # runs proxy-dnsmasq container
   dnsmasq.conf              # generated at startup by proxy-on.sh (gitignored)

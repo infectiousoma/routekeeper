@@ -1,0 +1,13 @@
+[Unit]
+Description=Re-establish proxy steering after WireGuard/network outages
+After=network-online.target docker.service proxy-primer.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/proxy/scripts/proxy-watch.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
