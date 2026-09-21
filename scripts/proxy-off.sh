@@ -4,6 +4,8 @@ set -Eeuo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REDSOCKS_DIR="${REDSOCKS_DIR:-$REPO_DIR/redsocks}"
+# systemd system units may not set HOME, and config.env expands it under set -u
+: "${HOME:=$(getent passwd "$(id -u)" | cut -d: -f6)}"; export HOME
 # shellcheck source=../config.env
 source "$REPO_DIR/config.env"
 
