@@ -217,7 +217,7 @@ install_systemd_service(){
   fi
 
   mkdir -p "$svc_dir"
-  sed "s|@REPO_DIR@|$REPO_DIR|g" "$svc_src" > "$svc_dst"
+  cp "$svc_src" "$svc_dst"
   systemctl --user daemon-reload
   systemctl --user enable proxy-primer.service
   say "[ok] proxy-primer.service installed and enabled for boot auto-start"

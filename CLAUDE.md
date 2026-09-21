@@ -112,8 +112,8 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `README.md` | User-facing setup and usage documentation |
 | `config.env.example` | **Template** — copy to `config.env` and fill in values |
 | `config.env` | **Single source of truth for all runtime config** (gitignored) |
-| `proxy-primer.service` | Optional systemd user service for boot auto-start. Template: `@REPO_DIR@` is substituted at install time (`client-setup.sh` or the `sed` command in README), so the clone directory name does not matter |
-| `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo). Template: `@REPO_DIR@` is substituted at install time, so the clone directory name does not matter |
+| `proxy-primer.service` | Optional systemd user service for boot auto-start |
+| `proxy-watch.service` | Optional systemd user service running `scripts/proxy-watch.sh` (needs passwordless sudo) |
 | `CLAUDE.md` | This file — architecture reference for AI-assisted development |
 
 ### `scripts/`
@@ -240,21 +240,19 @@ After priming, entry counts for all sets are printed. If the first ipset is stil
 ### Auto-start on boot
 ```bash
 mkdir -p ~/.config/systemd/user
-cd /path/to/your/clone   # repo root; the unit's @REPO_DIR@ placeholder is filled in by sed
-sed "s|@REPO_DIR@|$PWD|g" proxy-primer.service > ~/.config/systemd/user/proxy-primer.service
+cp ~/routekeeper/proxy-primer.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable proxy-primer.service
 ```
 
 ### Auto-recovery after WireGuard / network outages
 ```bash
-cd /path/to/your/clone   # repo root; the unit's @REPO_DIR@ placeholder is filled in by sed
 mkdir -p ~/.config/systemd/user
-sed "s|@REPO_DIR@|$PWD|" proxy-watch.service > ~/.config/systemd/user/proxy-watch.service
+cp ~/routekeeper/proxy-watch.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now proxy-watch.service
 journalctl --user -u proxy-watch -f
-./scripts/proxy-watch.sh --once   # manual check + repair
+~/routekeeper/scripts/proxy-watch.sh --once   # manual check + repair
 ```
 Full-outage behavior is unchanged: steered TCP is still redirected to redsocks and fails while Dante is unreachable (no leak of the real IP). The watcher repairs local drift; it does not fail open.
 
