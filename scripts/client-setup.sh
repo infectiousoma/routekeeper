@@ -208,18 +208,17 @@ set_iface_dns(){
 
 install_systemd_service(){
   local svc_src="$REPO_DIR/proxy-primer.service"
-  local svc_dir="$HOME/.config/systemd/user"
-  local svc_dst="$svc_dir/proxy-primer.service"
+  local svc_dst="/etc/systemd/system/proxy-primer.service"
 
   if [[ ! -f "$svc_src" ]]; then
     say "[warn] proxy-primer.service not found in repo root — skipping systemd install"
     return
   fi
 
-  mkdir -p "$svc_dir"
-  cp "$svc_src" "$svc_dst"
-  systemctl --user daemon-reload
-  systemctl --user enable proxy-primer.service
+  # System unit (runs as root): the scripts need root, and a user unit can't answer a sudo prompt
+  sudo cp "$svc_src" "$svc_dst"
+  sudo systemctl daemon-reload
+  sudo systemctl enable proxy-primer.service
   say "[ok] proxy-primer.service installed and enabled for boot auto-start"
 }
 

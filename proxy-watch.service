@@ -3,7 +3,7 @@
 # (~/.proxy-firewall-baseline) resolves to the same directory as your manual runs.
 [Unit]
 Description=Re-establish proxy steering after WireGuard/network outages
-After=network-online.target docker.service
+After=network-online.target docker.service proxy-primer.service
 Wants=network-online.target
 
 [Service]

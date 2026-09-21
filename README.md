@@ -288,11 +288,16 @@ sudo ipset save     > ~/.proxy-firewall-baseline/ipset.save
 ## Auto-start on boot (optional)
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp ~/routekeeper/proxy-primer.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable proxy-primer.service
+sudo cp ~/routekeeper/proxy-primer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable proxy-primer.service
+
+# If you installed the earlier user-level version, remove it:
+systemctl --user disable proxy-primer.service
+rm ~/.config/systemd/user/proxy-primer.service
 ```
+
+Runs as a **system** service under root (the scripts need root for iptables/ipset/docker, and a user service can't answer a sudo password prompt). The unit assumes the repo is at `/home/infectious/routekeeper`; edit `HOME=`, `ExecStart=` and `ExecStop=` in `proxy-primer.service` if your username or clone location differs.
 
 ---
 
@@ -323,8 +328,8 @@ Tunables (`WATCH_INTERVAL`, `WATCH_FAIL_THRESHOLD`, `WATCH_RECONCILE_EVERY`) are
 ```
 config.env.example          # template — copy to config.env and fill in values
 config.env                  # your real config (gitignored)
-proxy-primer.service        # optional systemd user service for boot auto-start
-proxy-watch.service         # optional systemd user service: auto-recovery watchdog
+proxy-primer.service        # optional systemd system unit for boot auto-start
+proxy-watch.service         # optional systemd system unit: auto-recovery watchdog
 scripts/
   server-setup.sh           # one-time server installer (--mode dns|proxy|both)
   client-setup.sh           # one-time client installer (--mode dns|proxy|both)

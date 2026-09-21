@@ -112,7 +112,7 @@ Groups are auto-discovered at runtime: any `DOMAINS_FOO` with matching `IPSET_V4
 | `README.md` | User-facing setup and usage documentation |
 | `config.env.example` | **Template** — copy to `config.env` and fill in values |
 | `config.env` | **Single source of truth for all runtime config** (gitignored) |
-| `proxy-primer.service` | Optional systemd user service for boot auto-start |
+| `proxy-primer.service` | Optional **system** unit (`/etc/systemd/system`, `User=root`, `HOME=/home/infectious`) for boot auto-start: runs `proxy-on.sh` / `proxy-off.sh` |
 | `proxy-watch.service` | Optional **system** unit (`/etc/systemd/system`, `User=root`, `HOME=/home/infectious`) running `scripts/proxy-watch.sh` |
 | `CLAUDE.md` | This file — architecture reference for AI-assisted development |
 
@@ -239,11 +239,11 @@ After priming, entry counts for all sets are printed. If the first ipset is stil
 
 ### Auto-start on boot
 ```bash
-mkdir -p ~/.config/systemd/user
-cp ~/routekeeper/proxy-primer.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable proxy-primer.service
+sudo cp ~/routekeeper/proxy-primer.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable proxy-primer.service
 ```
+System unit, `User=root`, `HOME=/home/infectious` (same as `proxy-watch.service`); `client-setup.sh` installs it the same way. Edit `HOME=`/`ExecStart=`/`ExecStop=` if the username or clone path differs.
 
 ### Auto-recovery after WireGuard / network outages
 ```bash

@@ -1,3 +1,6 @@
+# System-level unit: the scripts need root (iptables, ipset, docker, resolvectl),
+# and a user unit cannot prompt for a sudo password. HOME is set so BASELINE_DIR
+# (~/.proxy-firewall-baseline) resolves to the same directory as your manual runs.
 [Unit]
 Description=Enable US proxy (Netflix, OpenAI, Xfinity traffic steering)
 After=network-online.target docker.service
@@ -6,8 +9,10 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=%h/routekeeper/scripts/proxy-on.sh
-ExecStop=%h/routekeeper/scripts/proxy-off.sh
+User=root
+Environment=HOME=/home/infectious
+ExecStart=/home/infectious/routekeeper/scripts/proxy-on.sh
+ExecStop=/home/infectious/routekeeper/scripts/proxy-off.sh
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
