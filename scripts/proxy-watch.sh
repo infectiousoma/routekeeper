@@ -100,7 +100,7 @@ reconcile(){
   fi
 }
 
-sudo -n true 2>/dev/null || { log "passwordless sudo required (proxy-on.sh calls sudo)"; exit 1; }
+sudo -n true 2>/dev/null || { log "must run as root or with passwordless sudo (see proxy-watch.service)"; exit 1; }
 
 if [[ $ONCE == 1 ]]; then reconcile; exit 0; fi
 

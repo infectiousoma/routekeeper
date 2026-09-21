@@ -300,15 +300,18 @@ systemctl --user enable proxy-primer.service
 
 `proxy-watch.sh` probes `DANTE_IP:DANTE_PORT`. When the link comes back after an outage — and every `WATCH_RECONCILE_EVERY` seconds while it is up — it checks that dnsmasq, redsocks, the ipsets, the iptables rules (or gateway route) and the `$IFACE` DNS setting are still in place. Only if something drifted (typically the `$IFACE` DNS reset by a WiFi reconnect, or a missing `wg0` default route in gateway mode) does it re-run `proxy-on.sh`. It stays idle while the proxy is disabled, so `proxy-off.sh` is never undone.
 
-Requires passwordless `sudo` (the scripts call it). If the proxy was enabled before you added the watcher, run `proxy-on.sh` once so it writes the `enabled` marker.
+Runs as a **system** service under root — the scripts need root for iptables/ipset/docker, and a user service can't answer a sudo password prompt. The unit assumes the repo is at `/home/infectious/routekeeper`; edit `HOME=` and `ExecStart=` in `proxy-watch.service` if your username differs. If the proxy was enabled before you added the watcher, run `proxy-on.sh` once so it writes the `enabled` marker.
 
 ```bash
-mkdir -p ~/.config/systemd/user
-cp ~/routekeeper/proxy-watch.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now proxy-watch.service
-journalctl --user -u proxy-watch -f      # follow
-~/routekeeper/scripts/proxy-watch.sh --once   # one manual check + repair
+sudo cp ~/routekeeper/proxy-watch.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now proxy-watch.service
+sudo journalctl -u proxy-watch -f          # follow
+sudo ~/routekeeper/scripts/proxy-watch.sh --once   # one manual check + repair
+
+# If you installed the earlier user-level version, remove it:
+systemctl --user disable --now proxy-watch.service
+rm ~/.config/systemd/user/proxy-watch.service
 ```
 
 Tunables (`WATCH_INTERVAL`, `WATCH_FAIL_THRESHOLD`, `WATCH_RECONCILE_EVERY`) are in `config.env.example`.

@@ -32,7 +32,7 @@ echo "[info] routing mode: $ROUTING_MODE"
 mkdir -p "$BASELINE_DIR"
 
 # Serialize with proxy-off.sh so a watcher repair can't race a manual disable
-exec 9>"$BASELINE_DIR/lock"; flock 9
+exec 9<"$BASELINE_DIR"; flock 9
 if [[ "$IF_ENABLED" == 1 && ! -f "$BASELINE_DIR/enabled" ]]; then
   echo "[info] proxy not enabled; nothing to do"; exit 0
 fi

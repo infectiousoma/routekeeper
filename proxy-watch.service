@@ -1,13 +1,18 @@
+# System-level unit: the scripts need root (iptables, ipset, docker, resolvectl),
+# and a user unit cannot prompt for a sudo password. HOME is set so BASELINE_DIR
+# (~/.proxy-firewall-baseline) resolves to the same directory as your manual runs.
 [Unit]
 Description=Re-establish proxy steering after WireGuard/network outages
-After=network-online.target docker.service proxy-primer.service
+After=network-online.target docker.service
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/routekeeper/scripts/proxy-watch.sh
+User=root
+Environment=HOME=/home/infectious
+ExecStart=/home/infectious/routekeeper/scripts/proxy-watch.sh
 Restart=on-failure
 RestartSec=10
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

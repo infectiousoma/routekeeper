@@ -11,7 +11,7 @@ say(){ printf '%s\n' "$*"; }
 
 # Serialize with proxy-on.sh; drop the enabled marker first so proxy-watch.sh stops repairing
 mkdir -p "$BASELINE_DIR"
-exec 9>"$BASELINE_DIR/lock"; flock 9
+exec 9<"$BASELINE_DIR"; flock 9
 rm -f "$BASELINE_DIR/enabled"
 
 # Detect which routing mode was active when proxy-on was run
